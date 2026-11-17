@@ -251,6 +251,11 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      # Writing the combined manifest list to GHCR needs packages: write, same
+      # as the per-architecture image job; without it the PUT is 403.
+      contents: read
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
