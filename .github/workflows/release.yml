@@ -281,17 +281,9 @@ jobs:
             "${DOCKERHUB_USERNAME}/marga-runtime"
           )
           for repo in "${repositories[@]}"; do
-            sources=(
-              --amend "${repo}:v${VERSION}-amd64"
-              --amend "${repo}:v${VERSION}-arm64"
-            )
-            if [ "$PRERELEASE" = "true" ]; then
-              docker buildx imagetools create "${sources[@]}" \
-                --tag "${repo}:v${VERSION}" --tag "${repo}:${VERSION}"
-            else
-              docker buildx imagetools create "${sources[@]}" \
-                --tag "${repo}:v${VERSION}" --tag "${repo}:${VERSION}" --tag "${repo}:latest"
-            fi
+            # Source images are positional; imagetools create has no --amend.
+            args="$(bash .github/workflows/scripts/combine-image-manifest.sh "$VERSION" "$PRERELEASE" "$repo")"
+            docker buildx imagetools create $args
           done
 
   # Manual proof that the darwin/windows toolchains on a GitHub runner can
