@@ -1,0 +1,91 @@
+name: Full tests
+
+# The service-backed suite the light CI tier deliberately skips. Dispatched by
+# hand before a release, never on a pull request: it brings up the compose
+# stack and runs every package including the ones that need ClickHouse,
+# Weaviate, Redis and the MCP fixtures.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: full-tests-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  full:
+    name: service-backed suite
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.work
+          cache-dependency-path: go.work.sum
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Set up the Go workspace
+        run: bash .github/workflows/scripts/setup-go-workspace.sh
+
+      - name: Start backing services
+        run: docker compose -f tests/docker-compose.yml up -d
+
+      # Weaviate's HTTP API answers only once the cluster has a leader; the gRPC
+      # port is what the harness config dials, and Docker publishes it without
+      # checking it. ClickHouse needs its own ping.
+      - name: Wait for services
+        run: |
+          set -euo pipefail
+          wait_for() { # <description> <command...>
+            local description="$1"
+            shift
+            for _ in $(seq 1 120); do
+              if "$@" >/dev/null 2>&1; then
+                echo "$description ready"
+                return 0
+              fi
+              sleep 2
+            done
+            echo "::error::$description did not become ready"
+            docker compose -f tests/docker-compose.yml logs --tail=50
+            return 1
+          }
+          wait_for "weaviate http" curl -sf http://localhost:9000/v1/.well-known/ready
+          wait_for "weaviate grpc" bash -c 'exec 3<>/dev/tcp/127.0.0.1/50051'
+          wait_for "clickhouse ping" curl -sf http://localhost:8123/ping
+
+      - name: Build MCP test servers
+        run: make setup-mcp-tests
+
+      - name: Build UI
+        run: make build-ui
+
+      - name: Run every package
+        run: |
+          modules=(core framework transports)
+          for dir in plugins/*/; do
+            [ -f "$dir/go.mod" ] && modules+=("${dir%/}")
+          done
+          for module in "${modules[@]}"; do
+            echo "::group::go test $module"
+            ( cd "$module" && CI=1 go test -timeout 30m ./... )
+            echo "::endgroup::"
+          done
+
+      - name: Stop backing services
+        if: always()
+        run: docker compose -f tests/docker-compose.yml down -v
