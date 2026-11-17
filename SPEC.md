@@ -80,7 +80,7 @@ Verified in this worktree on 2026-11-17.
 
 | # | Fact | Consequence |
 |---|---|---|
-| V1 | There is **no root `go.mod`**; `go.work` declares `go 1.27.4`, `core/go.mod` declares `go 1.27.3` | `m03`: `actions/setup-go` must use `go-version-file: go.work`. Plan Task 6 Step 1 as written (`go.mod`) fails. **Correction C1.** |
+| V1 | There is **no root `go.mod`**; `go.work` declares `go 1.27.4`, `core/go.mod` declares `go 1.27.3`, and `.gitignore` excludes `go.work`/`go.work.sum`, so a fresh checkout has neither | `m03`: `actions/setup-go` must read a committed file, `go-version-file: core/go.mod` (same 1.27.3 floor) — pointing it at `go.work` fails the job with "The specified go version file at: go.work does not exist" before any build runs. **Correction C1, amended after the first runner dispatch.** |
 | V2 | `.dockerignore` excludes `.github/` | `m02`: the Dockerfile must be self-contained (`go work init` + `go work use`, as `transports/Dockerfile.local` already does). It must **not** call `.github/workflows/scripts/setup-go-workspace.sh`. |
 | V3 | `.dockerignore` excludes `go.work`, `go.work.sum` | `m02`: both lines must go, exactly as plan Task 2 Step 2 says. Generic `*.md`/`docs/`/`tests/` exclusions stay. |
 | V4 | `transports/Dockerfile.local` exists and indents every directive by two spaces | `m02`: promote it verbatim, de-indent, keep `ARG VERSION`, `-X main.Version=v${VERSION}`, `USER 1000:0`, `VOLUME`, `HEALTHCHECK /health`, `ENTRYPOINT /app/docker-entrypoint.sh`. |
@@ -120,7 +120,7 @@ bash .github/workflows/scripts/build-release-binary.test.sh
 
 # Unit tests, light tier (m03)
 bash .github/workflows/scripts/run-core-unit-tests.sh core
-for m in framework transports plugins/*/; do ( cd "$m" && env -u CI go test -timeout 20m ./... ); done
+for m in framework transports plugins/*/; do ( cd "$m" && env -u CI go test -short -timeout 20m ./... ); done
 (cd ui && npm run i18n:check)
 
 # Vet (m03)
@@ -305,8 +305,8 @@ Tier ringan means service-backed packages are not gated on PRs (`framework/logst
 **Acceptance.**
 1. Selector test green with exact args; script exits 1 with `error: no unit-test packages found` on an empty list; skips `*/internal/llmtests` and `*/internal/mcptests` by import path and by `*_test.go` import.
 2. `ci.yml` runs on `pull_request` and `push: branches: [dev]`, `concurrency` cancel-in-progress, `permissions: contents: read`, `timeout-minutes` set.
-3. `ci.yml` uses `go-version-file: go.work` (correction C1) and `node-version-file: .nvmrc`.
-4. Steps: workspace → `make build-ui` → `make build` → artifact `bifrost-http-linux-amd64` → `go vet` per module → core unit tests via script → `env -u CI go test` per `framework`/`transports`/`plugins/*` → `npm run i18n:check`.
+3. `ci.yml` uses `go-version-file: core/go.mod` (correction C1, amended) and `node-version-file: .nvmrc`.
+4. Steps: workspace → `make build-ui` → `make build` → artifact `bifrost-http-linux-amd64` → `go vet` per module → core unit tests via script → `env -u CI go test -short` per `framework`/`transports`/`plugins/*` → `npm run i18n:check`. `-short` is what makes "no services" true: the service-backed tests skip themselves instead of failing on a refused port, and `full-tests.yml` runs them without it.
 5. No `environment:`, no secret reference, no `step-security` egress step.
 6. `actionlint` clean.
 

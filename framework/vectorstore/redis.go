@@ -2007,8 +2007,29 @@ func buildKey(namespace, id string) string {
 	return fmt.Sprintf("%s:%s", namespace, id)
 }
 
-// newRedisStore creates a new Redis vector store.
+// newRedisStore creates a new Redis vector store and verifies connectivity.
 func newRedisStore(_ context.Context, config RedisConfig, logger schemas.Logger) (*RedisStore, error) {
+	client, err := config.newClient()
+	if err != nil {
+		return nil, err
+	}
+	store := &RedisStore{
+		client:              client,
+		config:              config,
+		logger:              logger,
+		namespaceFieldTypes: make(map[string]map[string]VectorStoreProperties),
+	}
+	// Eagerly verify connectivity, consistent with other store constructors (e.g. Qdrant)
+	if err := store.Ping(context.Background()); err != nil {
+		return nil, fmt.Errorf("failed to connect to redis: %w", err)
+	}
+	return store, nil
+}
+
+// newClient validates the config and builds the client without dialing. The
+// constructor above pings afterwards; keeping the two apart lets the config
+// validation tests run without a Redis server.
+func (config RedisConfig) newClient() (redis.UniversalClient, error) {
 	// Validate required fields
 	if config.Addr == nil || config.Addr.GetValue() == "" {
 		return nil, fmt.Errorf("redis addr is required")
@@ -2084,18 +2105,7 @@ func newRedisStore(_ context.Context, config RedisConfig, logger schemas.Logger)
 		})
 	}
 
-	// Creating store connection
-	store := &RedisStore{
-		client:              client,
-		config:              config,
-		logger:              logger,
-		namespaceFieldTypes: make(map[string]map[string]VectorStoreProperties),
-	}
-	// Eagerly verify connectivity, consistent with other store constructors (e.g. Qdrant)
-	if err := store.Ping(context.Background()); err != nil {
-		return nil, fmt.Errorf("failed to connect to redis: %w", err)
-	}
-	return store, nil
+	return client, nil
 }
 
 func systemCertPoolWithCA(caCertPEM string) (*x509.CertPool, error) {

@@ -445,14 +445,12 @@ jobs:
       - name: Core unit tests
         run: bash .github/workflows/scripts/run-core-unit-tests.sh core
       - name: Framework/transport/plugin unit tests
-        env:
-          CI: ""            # service-backed tests skip themselves instead of failing
         run: |
-          # A step-level `env: CI: ""` still reaches the child as an empty-but-set
-          # variable; the service-backed tests read that as "CI is on". Unset it.
+          # -short is what makes "no service containers" true: the service-backed
+          # tests then skip themselves instead of failing on a refused port.
           for m in framework transports plugins/*/; do
             echo "== $m"
-            ( cd "$m" && env -u CI go test -timeout 20m ./... )
+            ( cd "$m" && env -u CI go test -short -timeout 20m ./... )
           done
       - name: UI i18n
         working-directory: ui
@@ -501,11 +499,13 @@ Expected: `spike-cross` green and three artifacts present. If a toolchain is mis
 | Job | Steps (exact) |
 |---|---|
 | `meta` | `VERSION="${GITHUB_REF_NAME#v}"`; validate against `^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$`; output `version` and `prerelease` (`true` when the tag contains `-`). |
-| `verify` | checkout, setup Go, `source setup-go-workspace.sh`, `run-core-unit-tests.sh core`, `CI="" go test ./...` in `framework`/`transports`/`plugins/*`. |
+| `verify` | checkout, setup Go, `source setup-go-workspace.sh`, `run-core-unit-tests.sh core`, `CI="" go test -short ./...` in `framework`/`transports`/`plugins/*`. |
 | `binaries` | `needs: [meta, verify]`; matrix `{os, arch, runner}`: `linux/amd64 → ubuntu-24.04`, `linux/arm64 → ubuntu-24.04-arm`, `darwin/amd64, darwin/arm64, windows/amd64 → ubuntu-24.04`; steps: checkout, setup Go, setup Node, `install-cross-compilers.sh`, `make build-ui`, `build-release-binary.sh`, upload artifact `binary-<os>-<arch>`. |
 | `publish-release` | `needs: [meta, binaries]`; download all artifacts; `softprops/action-gh-release@v2` with `tag_name: ${{ github.ref_name }}`, `prerelease: ${{ needs.meta.outputs.prerelease == 'true' }}`, `generate_release_notes: true`, `files: dist/**`. |
 | `image` | `needs: [meta, verify]`; matrix `{arch, runner}` = `amd64/ubuntu-24.04`, `arm64/ubuntu-24.04-arm`; steps: checkout, setup-buildx, login GHCR (`GITHUB_TOKEN`) and Docker Hub (`vars.DOCKERHUB_USERNAME` / `secrets.DOCKERHUB_TOKEN`), fail fast if `vars.DOCKERHUB_USERNAME` is empty, `docker/build-push-action` pushing the tag list from `compute-image-tags.sh` for both registries, `cache-from/to: type=gha`. |
 | `image-manifest` | `needs: [meta, image]`; `docker buildx imagetools create` per registry combining `:v<version>-amd64` + `:v<version>-arm64` into `:v<version>`, `:<version>`, `:amd64`/`:arm64` targets already exist, and `:latest` only when `prerelease == false`. |
+
+> Amended after the first runner dispatch: the light tier passes `-short`, because the service-backed tests in `framework/vectorstore` and `plugins/semanticcache` gate on `-short`, not on `CI`, and so failed on refused ports. `full-tests.yml` still runs without it.
 
 - [x] **Step 4: Lint**
 

@@ -92,11 +92,11 @@ After the **first** publish, flip the GHCR package to public once, in the packag
 
 | Tier | Command | Runs on |
 |---|---|---|
-| Light | `bash .github/workflows/scripts/run-core-unit-tests.sh core` then `env -u CI go test ./...` per module | every PR and push to `dev` (`ci.yml`) |
+| Light | `bash .github/workflows/scripts/run-core-unit-tests.sh core` then `env -u CI go test -short ./...` per module | every PR and push to `dev` (`ci.yml`) |
 | Full | `make test-framework`, `make test-plugins`, `make test-mcp`; or dispatch `full-tests.yml` | on demand (`full-tests.yml`) |
 | Scripts | `bash .github/workflows/scripts/*.test.sh` | locally, milliseconds each |
 
-**Deliberate limit:** the light tier runs with `CI` unset and no service containers, so packages that need ClickHouse, Weaviate, Redis or Postgres are not gated on a pull request. `full-tests.yml` (manual dispatch) and the local `make test-*` targets above are the gate before a tag. This is a recorded trade-off for a single-operator repository, not an oversight.
+**Deliberate limit:** the light tier runs with `CI` unset, `-short` set and no service containers, so packages that need ClickHouse, Weaviate, Redis or Postgres skip themselves instead of failing on a refused port. What still runs there is real: every integration test in `framework/vectorstore` is gated on `-short`, but the in-process chromem backend and the pure-logic tests are not, and the Redis config validation runs against the client builder rather than a live server. `full-tests.yml` (manual dispatch, `CI=1`, no `-short`) and the local `make test-*` targets above are the gate before a tag. This is a recorded trade-off for a single-operator repository, not an oversight.
 
 ## Syncing from upstream
 

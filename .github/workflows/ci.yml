@@ -79,16 +79,17 @@ jobs:
 
       - name: Framework, transport and plugin unit tests
         run: |
-          # CI is unset: the service-backed packages fail rather than skip when
-          # CI is set and their backing service is absent. They are covered by
-          # full-tests.yml.
+          # CI is unset and -short is on: the service-backed tests then skip
+          # themselves instead of failing on a refused port, which is the whole
+          # point of this tier. They are covered by full-tests.yml, which sets
+          # CI=1 and runs without -short against real containers.
           modules=(framework transports)
           for dir in plugins/*/; do
             [ -f "$dir/go.mod" ] && modules+=("${dir%/}")
           done
           for module in "${modules[@]}"; do
             echo "::group::go test $module"
-            ( cd "$module" && env -u CI go test -timeout 20m ./... )
+            ( cd "$module" && env -u CI go test -short -timeout 20m ./... )
             echo "::endgroup::"
           done
 

@@ -185,8 +185,6 @@ func (ts *RedisTestSetup) cleanupTestData(t *testing.T) {
 // ============================================================================
 
 func TestRedisConfig_Validation(t *testing.T) {
-	logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
-	ctx := context.Background()
 
 	tests := []struct {
 		name        string
@@ -239,19 +237,22 @@ func TestRedisConfig_Validation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			store, err := newRedisStore(ctx, tt.config, logger)
+			// Validation is a property of the config, not of a reachable server:
+			// newRedisStore builds the client and pings it, and the ping is what
+			// needs Redis. Assert on construction alone so the light tier (no
+			// service containers) still covers every validation branch; the
+			// integration tests below cover a real connection.
+			client, err := tt.config.newClient()
 
 			if tt.expectError {
 				assert.Error(t, err)
-				assert.Nil(t, store)
+				assert.Nil(t, client)
 				if tt.errorMsg != "" {
 					assert.Contains(t, err.Error(), tt.errorMsg)
 				}
 			} else {
-				// For valid configs, store creation should succeed
-				// (connection will fail later when actually using Redis)
 				assert.NoError(t, err)
-				assert.NotNil(t, store)
+				assert.NotNil(t, client)
 			}
 		})
 	}

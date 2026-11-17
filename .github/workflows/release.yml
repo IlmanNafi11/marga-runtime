@@ -87,12 +87,14 @@ jobs:
 
       - name: Framework, transport and plugin unit tests
         run: |
+          # Same light tier as ci.yml: -short skips the service-backed tests, so
+          # a tag is not gated on containers it does not start.
           modules=(framework transports)
           for dir in plugins/*/; do
             [ -f "$dir/go.mod" ] && modules+=("${dir%/}")
           done
           for module in "${modules[@]}"; do
-            ( cd "$module" && env -u CI go test -timeout 20m ./... )
+            ( cd "$module" && env -u CI go test -short -timeout 20m ./... )
           done
 
   binaries:
