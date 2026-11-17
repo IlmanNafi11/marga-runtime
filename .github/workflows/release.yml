@@ -7,6 +7,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      spike:
+        description: "Cross-toolchain spike: build darwin/amd64, darwin/arm64 and windows/amd64 without publishing"
+        type: boolean
+        default: false
 
 concurrency:
   group: release-${{ github.ref }}
@@ -271,3 +276,60 @@ jobs:
                 --tag "${repo}:v${VERSION}" --tag "${repo}:${VERSION}" --tag "${repo}:latest"
             fi
           done
+
+  # Manual proof that the darwin/windows toolchains on a GitHub runner can
+  # compile the release contract before the next real tag relies on them.
+  # Runs only on dispatch; every publishing job above is push-gated.
+  spike-cross:
+    name: spike ${{ matrix.goos }}/${{ matrix.goarch }}
+    if: github.event_name == 'workflow_dispatch' && inputs.spike
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.work
+          cache-dependency-path: go.work.sum
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install cross compilers
+        run: bash .github/workflows/scripts/install-cross-compilers.sh
+
+      - name: Set up the Go workspace
+        run: bash .github/workflows/scripts/setup-go-workspace.sh
+
+      - name: Build UI
+        run: make build-ui
+
+      - name: Build binary
+        run: |
+          bash .github/workflows/scripts/build-release-binary.sh \
+            "${{ matrix.goos }}" "${{ matrix.goarch }}" 0.0.0-spike dist-spike
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: spike-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist-spike/*
+          if-no-files-found: error
