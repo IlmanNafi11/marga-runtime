@@ -189,6 +189,12 @@ var reviewedSites = map[string]siteReview{
 		status: elementSized,
 		reason: "each write edits one inline batch item's own bytes; the rebuilt items array is set on the body once, after the loop",
 	},
+	"gemini.settingsInEffect": {
+		status: elementSized,
+		reason: "each sjson write edits one named setting (instructions, tools, tool_choice, or a single setup key) " +
+			"out of a fixed live-context settings list; the document is rewritten at most once per setting name, " +
+			"not once per element of the session payload",
+	},
 	"gemini.wrapGeminiCountTokensBody": {
 		status: bounded,
 		reason: "loops over the fixed geminiCountTokensUnsupportedFields package var",
