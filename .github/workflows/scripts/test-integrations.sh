@@ -172,15 +172,12 @@ trap cleanup EXIT
 echo ""
 cd "$REPO_ROOT"
 
-# CI's build-gateway job supplies the binary as an artifact; only build it here
-# when running locally (or if CI ever drops that job).
+# CI builds the gateway in an earlier job; only build it here when running
+# locally (or if CI ever drops that job).
 #
-# The local build calls `go build` directly rather than `make build`: the
-# Makefile passes GOWORK=off unless LOCAL is set, which discards the workspace
-# setup-go-workspace.sh just wrote and sends the transport to the module proxy
-# for core/framework/plugins. That resolves published versions, so any change
-# spanning transports and an unreleased framework fails to compile here while
-# building fine on a developer machine.
+# The build goes through `make build`, which runs the workspace guard first and
+# compiles core/framework/plugins from go.work. A bare `go build` outside the
+# workspace would resolve published module versions instead of this tree.
 if [ "$SKIP_GATEWAY_START" = "1" ]; then
   # Reusing a gateway someone else started: no binary is needed, so do not build one
   # and do not demand that a stale tmp/bifrost-http exists.

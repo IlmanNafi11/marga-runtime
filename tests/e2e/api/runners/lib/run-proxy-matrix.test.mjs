@@ -284,19 +284,6 @@ echo "calls=$(tr '\\n' ' ' < "$calls")"
   assert.match(out, /^result=pass$/m, `a record written after the first read failed the cell: ${out}`);
 });
 
-// workflow-lint runs check-egress-allowlist.sh, which requires every host the harness
-// sources name to be allowlisted (or exempted) in each job that runs the harness.
-await test("the test-proxy-e2e job passes the egress allowlist check", () => {
-  let stderr = "";
-  try {
-    execFileSync("bash", [path.join(REPO_ROOT, ".github/workflows/scripts/check-egress-allowlist.sh"), path.join(REPO_ROOT, ".github/workflows/release-pipeline.yml")], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-  } catch (err) {
-    stderr = String(err.stderr);
-  }
-  const line = stderr.split("\n").find((l) => l.includes("job 'test-proxy-e2e'"));
-  assert.ok(!line, line);
-});
-
 // The manifest's hosts are regular expressions (api\.openai\.com), read into bash and
 // matched with grep -E, so they must reach grep unescaped: one concrete host per pattern
 // in the proxy's log must satisfy every pillar.

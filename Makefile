@@ -11,7 +11,6 @@ TEST_REPORTS_DIR ?= test-reports
 GOTESTSUM_FORMAT ?= standard-verbose
 FLOW ?=
 VERSION ?= dev-build
-LOCAL ?=
 REQUIRE_WORKSPACE = bash .github/workflows/scripts/require-go-workspace.sh
 COMPAT ?=
 
@@ -473,12 +472,11 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 		exit 1; \
 	fi
 
-docker-image: build-ui ## Build Docker image (LOCAL=1 to use Dockerfile.local)
+docker-image: build-ui ## Build the marga-runtime Docker image (root Dockerfile)
 	@$(ECHO) "$(GREEN)Building Docker image...$(NC)"
 	$(eval GIT_SHA=$(shell git rev-parse --short HEAD))
-	$(eval DOCKERFILE=$(if $(LOCAL),transports/Dockerfile.local,transports/Dockerfile))
-	@docker build -f $(DOCKERFILE) -t bifrost -t bifrost:$(GIT_SHA) -t bifrost:latest .
-	@$(ECHO) "$(GREEN)Docker image built: bifrost, bifrost:$(GIT_SHA), bifrost:latest (using $(DOCKERFILE))$(NC)"
+	@docker build -t marga-runtime -t marga-runtime:$(GIT_SHA) -t marga-runtime:latest .
+	@$(ECHO) "$(GREEN)Docker image built: marga-runtime, marga-runtime:$(GIT_SHA), marga-runtime:latest$(NC)"
 
 docker-run: ## Run Docker container (Usage: make docker-run [CONFIG=path/to/config.json or path/to/dir/])
 	@$(ECHO) "$(GREEN)Running Docker container...$(NC)"
@@ -491,7 +489,7 @@ docker-run: ## Run Docker container (Usage: make docker-run [CONFIG=path/to/conf
 	else \
 		CONFIG_MOUNT=""; \
 	fi; \
-	docker run -e APP_PORT=$(PORT) -e APP_HOST=0.0.0.0 -p $(PORT):$(PORT) -e LOG_LEVEL=$(LOG_LEVEL) -e LOG_STYLE=$(LOG_STYLE) -v $(shell pwd):/app/data $$CONFIG_MOUNT bifrost
+	docker run -e APP_PORT=$(PORT) -e APP_HOST=0.0.0.0 -p $(PORT):$(PORT) -e LOG_LEVEL=$(LOG_LEVEL) -e LOG_STYLE=$(LOG_STYLE) -v $(shell pwd):/app/data $$CONFIG_MOUNT marga-runtime
 
 docs: ## Prepare local docs (bundles OpenAPI spec then starts Mintlify dev server)
 	@$(ECHO) "$(GREEN)Bundling OpenAPI spec...$(NC)"
@@ -2184,8 +2182,7 @@ list-video-costing-cases: ## List the video costing cases and which checklist li
 smoke-provider-harness-test: ## Run the curated ~100-request provider-harness smoke set (tests/e2e/api/collections/smoke-manifest.json). Same flags as run-provider-harness-test; equivalent to SMOKE=1.
 	@$(MAKE) run-provider-harness-test SMOKE=1
 
-# Versions pinned to match the CI installs in .github/workflows/release-pipeline.yml
-# (test-core, test-api-integrations, test-docker-image-*). Keep them in sync.
+# Versions pinned so a local harness run installs the same newman as CI.
 NEWMAN_VERSION ?= 6.2.1
 NEWMAN_HTMLEXTRA_VERSION ?= 1.23.1
 

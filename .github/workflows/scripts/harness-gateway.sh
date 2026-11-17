@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Sourceable helpers shared by the CI harness runners (test-provider-harness.sh,
-# test-cli-harness.sh). Builds the bifrost-http binary, seeds a throwaway app
+# run-cli-harness-test). Builds the bifrost-http binary, seeds a throwaway app
 # dir with sqlite stores, and boots the gateway.
 #
 # Usage:

@@ -194,9 +194,9 @@ CMD ["/app/main"]
 </Accordion>
 
 **Key changes from static build:**
-- Line 40-44: Removed `-extldflags '-static'` and `-tags "sqlite_static"`
+- The `go build` line drops `-extldflags '-static'` and `-tags "sqlite_static"`
 - Removed UPX compression step (optional, but simpler)
-- Runtime uses musl libc from Alpine base image
+- Runtime uses musl libc from the Alpine base image (glibc on the Debian example below)
 
 **Build and run:**
 
@@ -260,6 +260,9 @@ RUN go build \
     -o /app/main \
     ./bifrost-http
 
+# The entrypoint ships with the transports module
+RUN cp transports/docker-entrypoint.sh /app/docker-entrypoint.sh
+
 # Verify build succeeded
 RUN test -f /app/main || (echo "Build failed" && exit 1)
 
@@ -321,6 +324,8 @@ CMD ["/app/main"]
 - Installs `apt` packages instead of `apk`
 - Runtime uses glibc (libc6) instead of musl
 - Uses `useradd` instead of `adduser` for user creation
+
+The repository ships one `Dockerfile` at its root; the Debian variant exists only in this guide. Pass it on stdin with `docker build -f -` as shown below.
 
 **Build and run:**
 
