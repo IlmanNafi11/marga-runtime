@@ -22,7 +22,11 @@ type TableRateLimit struct {
 	RequestResetDuration *string   `gorm:"type:varchar(50)" json:"request_reset_duration,omitempty"` // e.g., "30s", "5m", "1h", "1d", "1w", "1M", "1Y"
 	RequestCurrentUsage  int64     `gorm:"default:0" json:"request_current_usage"`                   // Current request usage
 	RequestLastReset     time.Time `gorm:"index" json:"request_last_reset"`                          // Last time request counter was reset
-
+	// Client-IP limits with flexible duration: at most IPMaxLimit distinct client IPs per rolling
+	// IPResetDuration window. Both nil leaves the feature off; validated by BeforeSave like the
+	// token/request pairs.
+	IPMaxLimit      *int64  `gorm:"default:null" json:"ip_max_limit,omitempty"`
+	IPResetDuration *string `gorm:"type:varchar(50)" json:"ip_reset_duration,omitempty"`
 	// Deprecated: set calendar_aligned on the parent access profile / VK / team
 	// instead. Kept for backward compatibility with older config.json files;
 	// the OSS applyV1Compat path and the enterprise access-profile reconciler
@@ -81,6 +85,25 @@ func (rl *TableRateLimit) BeforeSave(tx *gorm.DB) error {
 	// Making sure request limit is greater than zero
 	if rl.RequestMaxLimit != nil && *rl.RequestMaxLimit <= 0 {
 		return fmt.Errorf("request_max_limit cannot be zero or negative: %d", *rl.RequestMaxLimit)
+	}
+
+	// Validate IP reset duration if provided
+	if rl.IPResetDuration != nil {
+		if d, err := ParseDuration(*rl.IPResetDuration); err != nil {
+			return fmt.Errorf("invalid ip reset duration format: %s", *rl.IPResetDuration)
+		} else if d <= 0 {
+			return fmt.Errorf("ip reset duration cannot be zero or negative: %s", *rl.IPResetDuration)
+		}
+	}
+
+	// Validate that if an IP max limit is set, a reset duration is also provided
+	if rl.IPMaxLimit != nil && rl.IPResetDuration == nil {
+		return fmt.Errorf("ip_reset_duration is required when ip_max_limit is set")
+	}
+
+	// Making sure the IP limit is greater than zero
+	if rl.IPMaxLimit != nil && *rl.IPMaxLimit <= 0 {
+		return fmt.Errorf("ip_max_limit cannot be zero or negative: %d", *rl.IPMaxLimit)
 	}
 
 	return nil

@@ -1719,6 +1719,20 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 		sort.Strings(names)
 		hash.Write([]byte("relayGrants:" + strings.Join(names, ",")))
 	}
+	// Hash allowed_ips whenever the key carries the list, mirroring the listed_models presence rule
+	// so every key that predates the column keeps the hash config sync already stored for it. Order
+	// is normalized before encoding, so the order an operator wrote the entries in cannot move the
+	// hash, while an explicit empty list stays a change from the absent one.
+	if vk.AllowedIPs != nil {
+		entries := append([]string{}, vk.AllowedIPs...)
+		sort.Strings(entries)
+		data, err := sonic.Marshal(entries)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("allowedIPs:"))
+		hash.Write(data)
+	}
 	// Hash ExpiresAt only when set, so rows created before expiry existed keep their hash
 	if vk.ExpiresAt != nil {
 		hash.Write([]byte("expiresAt:" + vk.ExpiresAt.UTC().Format(time.RFC3339Nano)))
@@ -1907,6 +1921,20 @@ func GenerateRateLimitHash(rl tables.TableRateLimit) (string, error) {
 	// Hash RequestResetDuration
 	if rl.RequestResetDuration != nil {
 		hash.Write([]byte(*rl.RequestResetDuration))
+	}
+
+	// Hash IPMaxLimit and IPResetDuration. Like the token/request pairs this is written
+	// unconditionally, so a config.json that adds or changes the pair re-syncs.
+	if rl.IPMaxLimit != nil {
+		data, err := sonic.Marshal(*rl.IPMaxLimit)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
+	if rl.IPResetDuration != nil {
+		hash.Write([]byte(*rl.IPResetDuration))
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil

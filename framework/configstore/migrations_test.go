@@ -814,6 +814,40 @@ func TestMigrationAddVKRotationCooldownColumns_CreatesIndex(t *testing.T) {
 	require.NoError(t, migrationAddVKRotationCooldownColumns(ctx, db, testMigrationLogger))
 }
 
+// TestMigrationAddVirtualKeyIPControlColumns pins the upgrade path: the three IP-control columns
+// are added nullable with no backfill, so an existing database comes out of the migration with the
+// feature off for every row, and a re-run is idempotent.
+func TestMigrationAddVirtualKeyIPControlColumns(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	mg := db.Migrator()
+
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS governance_rate_limits (
+		id VARCHAR(255) PRIMARY KEY,
+		token_max_limit INTEGER,
+		token_reset_duration VARCHAR(50),
+		request_max_limit INTEGER,
+		request_reset_duration VARCHAR(50),
+		config_hash VARCHAR(255),
+		created_at DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL
+	)`).Error)
+
+	require.False(t, mg.HasColumn(&tables.TableRateLimit{}, "ip_max_limit"))
+	require.False(t, mg.HasColumn(&tables.TableRateLimit{}, "ip_reset_duration"))
+	require.False(t, mg.HasColumn(&tables.TableVirtualKey{}, "allowed_ips"))
+
+	require.NoError(t, migrationAddVirtualKeyIPControlColumns(ctx, db, testMigrationLogger))
+
+	assert.True(t, mg.HasColumn(&tables.TableRateLimit{}, "ip_max_limit"))
+	assert.True(t, mg.HasColumn(&tables.TableRateLimit{}, "ip_reset_duration"))
+	assert.True(t, mg.HasColumn(&tables.TableVirtualKey{}, "allowed_ips"))
+
+	// Idempotent: a re-run with the columns already present must not fail.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_virtual_key_ip_control_columns").Error)
+	require.NoError(t, migrationAddVirtualKeyIPControlColumns(ctx, db, testMigrationLogger))
+}
+
 func TestMigrationAddStoreRawRequestResponseColumn(t *testing.T) {
 	tests := []struct {
 		name                            string

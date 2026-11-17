@@ -304,6 +304,12 @@ type TableVirtualKey struct {
 	// which the update keeps. The block switched off in the UI is this case.
 	ClearListedModels bool `gorm:"-" json:"-"`
 
+	// AllowedIPs is the key's allowed-IP list: when set, only listed IPs/CIDRs may use the key.
+	// Validated by ValidateAllowedIPs; nil (NULL) leaves the rule off, while an explicitly empty
+	// list denies every client IP. Entries are stored verbatim — normalization happens at
+	// enforcement, never at storage.
+	AllowedIPs []string `gorm:"type:text;serializer:json" json:"allowed_ips,omitempty"`
+
 	// Relationships
 	Team      *TableTeam      `gorm:"foreignKey:TeamID" json:"team,omitempty"`
 	Customer  *TableCustomer  `gorm:"foreignKey:CustomerID" json:"customer,omitempty"`
@@ -540,6 +546,12 @@ func (vk *TableVirtualKey) BeforeSave(tx *gorm.DB) error {
 		return err
 	}
 	normalizeVirtualKeyListedModels(&vk.ListedModels)
+
+	// The allowed-IP list is stored as written; rejection here is what stops a padded or malformed
+	// entry from reaching enforcement and matching nothing.
+	if err := ValidateAllowedIPs(vk.AllowedIPs); err != nil {
+		return err
+	}
 
 	// Hash must be computed before encryption (from plaintext value).
 	if vk.Value.IsSet() {

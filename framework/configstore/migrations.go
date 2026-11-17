@@ -610,6 +610,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_oauth2_authorize_requests_device_code_columns"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns},
 	{IDs: []string{"add_oauth2_authorize_requests_device_code_indexes"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeIndexes},
 	{IDs: []string{"add_client_config_mcp_server_max_protocol_version_column"}, run: migrationAddClientConfigMCPServerMaxProtocolVersionColumn},
+	{IDs: []string{"add_virtual_key_ip_control_columns"}, run: migrationAddVirtualKeyIPControlColumns},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17777,4 +17778,42 @@ func oauth2AuthorizeRequestsDeviceCodeIndexesMigration(ctx context.Context, id s
 			return nil
 		},
 	}
+}
+
+// migrationAddVirtualKeyIPControlColumns adds the client-IP controls: ip_max_limit and
+// ip_reset_duration on governance_rate_limits, and allowed_ips on governance_virtual_keys. All three
+// are nullable with no default and no backfill, because NULL is the meaning that preserves today's
+// behaviour: an unset IP limit enforces nothing and an unset list admits every IP.
+func migrationAddVirtualKeyIPControlColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_virtual_key_ip_control_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, column := range []string{"ip_max_limit", "ip_reset_duration"} {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableRateLimit{}, column); err != nil {
+					return err
+				}
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableVirtualKey{}, "allowed_ips"); err != nil {
+				return err
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, column := range []string{"ip_max_limit", "ip_reset_duration"} {
+				if err := dropColumnIfExists(tx, logger, &tables.TableRateLimit{}, column); err != nil {
+					return err
+				}
+			}
+			return dropColumnIfExists(tx, logger, &tables.TableVirtualKey{}, "allowed_ips")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add virtual key ip control columns migration: %s", err.Error())
+	}
+	return nil
 }

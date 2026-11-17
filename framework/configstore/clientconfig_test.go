@@ -244,3 +244,72 @@ func TestGenerateClientConfigHashCoversEntityAccessProfileMode(t *testing.T) {
 	require.Equal(t, unset, hash(tables.EntityAccessProfileModeUnion), "union is the default and hashes as unset")
 	require.NotEqual(t, unset, hash(tables.EntityAccessProfileModeIntersect), "intersect is a change")
 }
+
+// TestGenerateRateLimitHashCoversIPFields pins that the client-IP limit pair moves the rate-limit
+// hash. Unlike the VK-side fields this pair is hashed unconditionally, matching the per-field
+// style of the token and request blocks, so a config.json that adds or changes it re-syncs.
+func TestGenerateRateLimitHashCoversIPFields(t *testing.T) {
+	hash := func(rl tables.TableRateLimit) string {
+		t.Helper()
+		h, err := GenerateRateLimitHash(rl)
+		require.NoError(t, err)
+		return h
+	}
+	base := tables.TableRateLimit{ID: "rl-ip"}
+	plain := hash(base)
+
+	withPair := base
+	withPair.IPMaxLimit = new(int64(10))
+	withPair.IPResetDuration = new("1h")
+	require.NotEqual(t, plain, hash(withPair), "adding the IP pair is a change")
+
+	raised := withPair
+	raised.IPMaxLimit = new(int64(20))
+	require.NotEqual(t, hash(withPair), hash(raised), "raising the max is a change")
+
+	otherWindow := withPair
+	otherWindow.IPResetDuration = new("24h")
+	require.NotEqual(t, hash(withPair), hash(otherWindow), "changing the window is a change")
+
+	// The pair is hashed field by field, so each half alone moves the hash too.
+	require.NotEqual(t, plain, hash(func() tables.TableRateLimit {
+		rl := base
+		rl.IPMaxLimit = new(int64(10))
+		return rl
+	}()), "max alone is a change")
+	require.NotEqual(t, plain, hash(func() tables.TableRateLimit {
+		rl := base
+		rl.IPResetDuration = new("1h")
+		return rl
+	}()), "duration alone is a change")
+}
+
+// TestGenerateVirtualKeyHashCoversAllowedIPs pins the VK-side presence rule: the hash moves only
+// when AllowedIPs is non-nil, mirroring the ListedModels rule, so every key that predates the
+// column keeps the hash config sync already stored for it and an upgrade sees no drift.
+func TestGenerateVirtualKeyHashCoversAllowedIPs(t *testing.T) {
+	hash := func(vk tables.TableVirtualKey) string {
+		t.Helper()
+		h, err := GenerateVirtualKeyHash(vk)
+		require.NoError(t, err)
+		return h
+	}
+	base := tables.TableVirtualKey{ID: "vk-ip", Name: "prod", Value: *schemas.NewSecretVar("sk-bf-ip")}
+	plain := hash(base)
+
+	withList := base
+	withList.AllowedIPs = []string{"10.0.0.1", "10.0.0.0/24"}
+	require.NotEqual(t, plain, hash(withList), "declaring a list is a change")
+
+	reordered := base
+	reordered.AllowedIPs = []string{"10.0.0.0/24", "10.0.0.1"}
+	require.Equal(t, hash(withList), hash(reordered), "list order does not move the hash")
+
+	changed := base
+	changed.AllowedIPs = []string{"10.0.0.2"}
+	require.NotEqual(t, hash(withList), hash(changed), "changing an entry is a change")
+
+	empty := base
+	empty.AllowedIPs = []string{}
+	require.NotEqual(t, plain, hash(empty), "an explicit empty list is a change, not the absent list")
+}
