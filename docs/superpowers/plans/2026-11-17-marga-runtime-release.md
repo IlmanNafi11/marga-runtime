@@ -28,9 +28,11 @@
 
 ## Status (2026-11-17)
 
-Tasks 1–10 are implemented and verified locally; every step box is checked except the one that needs a human-run workflow dispatch. Local evidence: the four `*.test.sh` suites pass, `actionlint` v1.7.12 is clean on `ci.yml`/`release.yml`/`full-tests.yml`, `CI=1 make build` produces `tmp/bifrost-http` and exits non-zero once `go.work` is moved aside, the image boots with `v2.6.0` on `/health` and HTML on `/`, the linux/amd64 release artifact boots with the matching banner, and the Task 9 sweeps report no `MISSING:` script and exactly three workflows.
+Tasks 1–10 are implemented and verified locally; every step box is checked. Local evidence: the five `*.test.sh` suites pass, `actionlint` v1.7.12 is clean on `ci.yml`/`release.yml`/`full-tests.yml`, `CI=1 make build` produces `tmp/bifrost-http` and exits non-zero once `go.work` is moved aside, the image boots with `v2.6.0` on `/health` and HTML on `/`, and the linux/amd64 release artifact is a static musl binary that boots with the matching banner.
 
-Outstanding, operator-only: Task 7 Step 2 — push `dev` and dispatch `release.yml`'s `spike-cross` job; and the `v0.0.1-spike` rehearsal tag that is the only end-to-end release proof.
+`spike-cross` is green on the real runner (run 44044080277): `darwin/amd64`, `darwin/arm64` and `windows/amd64` each built, checksummed and uploaded an artifact, so the cross toolchains work. Getting there needed three fixes the local contract tests did not cover, all pinned by new cases now: `setup-go` read the gitignored `go.work`; `install-cross-compilers.sh` tripped over the EC2 runner's regional `apt-mirrors.txt`; and `build-release-binary.sh` neither exported the per-platform `CC` nor resolved a relative outdir before its `cd`.
+
+Outstanding, operator-only: the `v0.0.1-spike` rehearsal tag, which is the only end-to-end release proof.
 
 ## Review Focus
 
@@ -489,7 +491,7 @@ git commit -m "ci: one lightweight build+unit-test workflow on dev"
 
 Add to `release.yml` a `workflow_dispatch`-only trigger in addition to `push: tags: ['v*']`, and a job `spike-cross` with `if: github.event_name == 'workflow_dispatch'` that runs `bash .github/workflows/scripts/install-cross-compilers.sh`, `make build-ui`, then for each of `darwin amd64`, `darwin arm64`, `windows amd64` runs `build-release-binary.sh <goos> <goarch> 0.0.0 dist-spike` and uploads the artifacts. All other jobs get `if: github.event_name == 'push'`.
 
-- [ ] **Step 2: Push the branch and run the spike**
+- [x] **Step 2: Push the branch and run the spike**
 
 Run: `git push origin HEAD:dev` then trigger the workflow from the Actions UI (`Run workflow`).
 Expected: `spike-cross` green and three artifacts present. If a toolchain is missing, capture the failing command and stop — the fallback (Linux-only) is a user decision, not a builder decision.
