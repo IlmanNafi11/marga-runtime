@@ -32,9 +32,21 @@ Tasks 1–10 are implemented and verified locally; every step box is checked. Lo
 
 `spike-cross` is green on the real runner (runs 44044080277 and 44068936825): `darwin/amd64`, `darwin/arm64` and `windows/amd64` each built, checksummed and uploaded an artifact, so the cross toolchains work. Getting there needed three fixes the local contract tests did not cover, all pinned by new cases now: `setup-go` read the gitignored `go.work`; `install-cross-compilers.sh` tripped over the EC2 runner's regional `apt-mirrors.txt`; and `build-release-binary.sh` neither exported the per-platform `CC` nor resolved a relative outdir before its `cd`.
 
-`ci.yml` is green end to end (run 44066288198, 17m). The first attempt failed on 44 `framework/vectorstore` tests and on `plugins/semanticcache`, because those suites gate their integration paths on `testing.Short()`, not on `CI`; the light tier now passes `-short` in `ci.yml` and in `verify`, and the Redis config/TLS-shape tests assert on the client builder (`RedisConfig.newClient()`) instead of a store that pings. `full-tests.yml` still runs without `-short`.
+`ci.yml` is green end to end (runs 44066288198 and 44081705386, ~17m). The first attempt failed on 44 `framework/vectorstore` tests and on `plugins/semanticcache`, because those suites gate their integration paths on `testing.Short()`, not on `CI`; the light tier now passes `-short` in `ci.yml` and in `verify`, and the Redis config/TLS-shape tests assert on the client builder (`RedisConfig.newClient()`) instead of a store that pings. `full-tests.yml` still runs without `-short`.
 
-Outstanding, operator-only: the `v0.0.1-spike` rehearsal tag, which is the only end-to-end proof of the publish, image, manifest and release-asset steps.
+### `v0.0.1-spike` rehearsal — run 44081709015
+
+Published: GitHub Release `marga-runtime v0.0.1-spike`, `prerelease=true`, exactly 10 assets (5 binaries + 5 checksums). The linux/amd64 asset was downloaded back, `sha256sum -c` passed, `file` reports a statically linked stripped ELF, `ldd` reports "not a dynamic executable", and it cold-boots with `/health` 200, HTML on `/`, and `v0.0.1-spike` in the banner.
+
+Green: `validate tag`, `unit tests`, all five `binary *` legs, `GitHub release`.
+
+Red, blocking a stable tag: both `image` legs fail at **Log in to Docker Hub** — `unauthorized: incorrect username or password`. The GHCR login in the same job succeeds (`Login Succeeded!`), and the failure happens before buildx runs, so no image was pushed anywhere and `image manifest` was skipped. `vars.DOCKERHUB_USERNAME` is set (`ilmannafi`); the `DOCKERHUB_TOKEN` secret is wrong or lacks write scope.
+
+### Still operator-only
+
+1. Rotate `DOCKERHUB_TOKEN` (Docker Hub → Account settings → Personal access tokens, read/write) and set it as the repository secret.
+2. Flip the GHCR package to public once, after the first successful push.
+3. Re-run `v0.0.1-spike` (delete and re-push the tag) to prove the image and manifest steps, then move to a real version.
 
 ## Review Focus
 
