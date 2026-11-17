@@ -52,7 +52,7 @@ Outstanding, operator-only: Task 7 Step 2 — push `dev` and dispatch `release.y
 **Interfaces:**
 - Produces: `require-go-workspace.sh` — exits 1 with `error: go.work is missing; builds must run against the local workspace` when `go.work` is absent *and* `CI` is non-empty; exits 0 otherwise. Sourced/called from `Makefile` before every `go build`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```bash
 #!/usr/bin/env bash
@@ -75,12 +75,12 @@ expect_fail "$WORK/without" CI=true     || { echo "FAIL: go.work absent + CI sho
 exit $fail
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `bash .github/workflows/scripts/require-go-workspace.test.sh`
 Expected: exits non-zero, both `FAIL:` lines appear (the script does not exist yet, so `bash` errors and every `expect_*` misreports).
 
-- [ ] **Step 3: Implement the guard**
+- [x] **Step 3: Implement the guard**
 
 ```bash
 #!/usr/bin/env bash
@@ -97,26 +97,26 @@ fi
 exit 0
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `bash .github/workflows/scripts/require-go-workspace.test.sh`
 Expected: exit 0, no output.
 
-- [ ] **Step 5: Wire the guard into the Makefile and drop `GOWORK=off` from builds**
+- [x] **Step 5: Wire the guard into the Makefile and drop `GOWORK=off` from builds**
 
 In `build` (lines ~388-420) and `build-cli`:
 - Insert `@bash .github/workflows/scripts/require-go-workspace.sh` as the first line of each recipe body.
 - Replace `$(if $(LOCAL),,GOWORK=off)` with nothing in all three `go build` invocations and in `build-cli` (`@cd cli && go build …`). Remove the `LOCAL` banner branch in `build` that only exists to announce `GOWORK=off`, keeping one banner line.
 - In `_build-with-docker` (lines ~440-470) delete both `$(if $(LOCAL),,-e GOWORK=off)` arguments; the container must see the workspace copy.
 
-- [ ] **Step 6: Verify the Makefile path end to end**
+- [x] **Step 6: Verify the Makefile path end to end**
 
 Run: `bash .github/workflows/scripts/setup-go-workspace.sh && CI=1 make build-ui && CI=1 make build`
 Expected: build succeeds and `tmp/bifrost-http` exists.
 Then: `mv go.work /tmp/go.work.bak && CI=1 bash .github/workflows/scripts/require-go-workspace.sh; echo "exit=$?"; mv /tmp/go.work.bak go.work`
 Expected: `exit=1`.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add Makefile .github/workflows/scripts/require-go-workspace.sh .github/workflows/scripts/require-go-workspace.test.sh
@@ -136,7 +136,7 @@ git commit -m "build: compile against the local workspace and refuse GOWORK=off 
 - Consumes: `go.work` creation pattern from `.github/workflows/scripts/setup-go-workspace.sh`.
 - Produces: image exposing `8080`, entrypoint `/app/docker-entrypoint.sh`, data dir `/app/data`, healthcheck `GET /health`. Build context is the repo root; `docker build --build-arg VERSION=2.6.0 .`
 
-- [ ] **Step 1: Write the Dockerfile**
+- [x] **Step 1: Write the Dockerfile**
 
 Start from `transports/Dockerfile.local` verbatim, then apply exactly these changes:
 - UI stage: unchanged (`COPY ui/package*.json ./`, `npm ci`, `COPY ui/ ./`, `npm run build-enterprise`).
@@ -145,15 +145,15 @@ Start from `transports/Dockerfile.local` verbatim, then apply exactly these chan
 - Runtime stage: unchanged (alpine 3.23.7, `musl libgcc ca-certificates zlib`, `adduser`, `USER 1000:0`, `VOLUME`, `EXPOSE 8080`, `HEALTHCHECK`, `ENTRYPOINT ["/app/docker-entrypoint.sh"]`).
 - Remove the leading two-space indentation the original file has on every Dockerfile directive (`  FROM` → `FROM`); Docker tolerates it, but the repo's new root file should not be indented.
 
-- [ ] **Step 2: Let the workspace into the build context**
+- [x] **Step 2: Let the workspace into the build context**
 
 Edit `.dockerignore`: delete the `# Go workspaces (local only)` block (`go.work`, `go.work.sum`). Leave `tests/`, `docs/`, `*.md`, `tmp/` excluded.
 
-- [ ] **Step 3: Point `make docker-image` at the new file**
+- [x] **Step 3: Point `make docker-image` at the new file**
 
 In `Makefile:482-488`: `$(eval DOCKERFILE=$(if $(LOCAL),transports/Dockerfile.local,transports/Dockerfile))` becomes `DOCKERFILE=Dockerfile`; image names become `marga-runtime`, `marga-runtime:$(GIT_SHA)`, `marga-runtime:latest`; the help comment loses the `LOCAL=1` note.
 
-- [ ] **Step 4: Build and smoke-test the image**
+- [x] **Step 4: Build and smoke-test the image**
 
 Run:
 ```bash
@@ -166,7 +166,7 @@ docker rm -f marga-smoke
 ```
 Expected: `/health` returns OK, `/` returns HTML (not a 404 / empty body), log banner contains `v2.6.0`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Dockerfile .dockerignore Makefile
@@ -184,7 +184,7 @@ git commit -m "build: add a root Dockerfile that builds from the local workspace
 **Interfaces:**
 - Produces: `run-core-unit-tests.sh [module-dir]` (default `core`). Selects packages with `go list -f '{{.ImportPath}}{{"\t"}}{{.Dir}}' ./...`, skipping any package whose import path ends in `/internal/llmtests` or `/internal/mcptests`, and any package whose `*_test.go` imports `/internal/llmtests` or `/internal/mcptests`; runs `go test -timeout 20m <packages...>`; exits 1 with `error: no unit-test packages found` if the list is empty.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 The test puts a fake `go` on `PATH` that prints a fixed package list and records its arguments:
 
@@ -216,26 +216,26 @@ args="$(cat "$WORK/go-test.args")"
 echo "PASS"
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `bash .github/workflows/scripts/run-core-unit-tests.test.sh`
 Expected: non-zero exit (`run-core-unit-tests.sh: No such file or directory`).
 
-- [ ] **Step 3: Implement the runner**
+- [x] **Step 3: Implement the runner**
 
 Port the selection loop from `release-pipeline.yml:1034-1060` into a script, adding `mcptests` to both skip checks (`*/internal/mcptests` and the `grep -lq` pattern `/internal/mcptests`), keeping the `llmtests` checks as they are, and keeping the empty-list error.
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `bash .github/workflows/scripts/run-core-unit-tests.test.sh`
 Expected: `PASS`.
 
-- [ ] **Step 5: Run it for real against the repo**
+- [x] **Step 5: Run it for real against the repo**
 
 Run: `source .github/workflows/scripts/setup-go-workspace.sh && bash .github/workflows/scripts/run-core-unit-tests.sh core 2>&1 | tail -20`
 Expected: package list printed (skipped ones logged), `ok`/`no test files` lines, exit 0. If a package fails for a missing service, that package belongs to the skip list — record which and stop; do not add Docker here.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add .github/workflows/scripts/run-core-unit-tests.sh .github/workflows/scripts/run-core-unit-tests.test.sh
@@ -255,7 +255,7 @@ git commit -m "ci: extract the lightweight core unit-test selection into a scrip
   `ghcr.io/x/marga-runtime:v2.6.0-amd64`, `:2.6.0-amd64`, `:v2.6.0`, `:2.6.0`, `:amd64`, `:latest`.
   For `2.7.0-rc.1 amd64 …` the same list **without** `:latest`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```bash
 #!/usr/bin/env bash
@@ -277,21 +277,21 @@ grep -qx "$P:v2.7.0-rc.1-arm64" <<<"$pre" || { echo "FAIL: missing prerelease pe
 echo PASS
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `bash .github/workflows/scripts/compute-image-tags.test.sh`
 Expected: non-zero (script missing).
 
-- [ ] **Step 3: Implement the script**
+- [x] **Step 3: Implement the script**
 
 Three args required; `:latest` is emitted only when `$1` contains no `-`; `-amd64`/`-arm64` are emitted both on the release version and on the bare arch tag. Exit 2 on wrong arg count.
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `bash .github/workflows/scripts/compute-image-tags.test.sh`
 Expected: `PASS`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add .github/workflows/scripts/compute-image-tags.sh .github/workflows/scripts/compute-image-tags.test.sh
@@ -309,7 +309,7 @@ git commit -m "ci: compute image tags so prereleases never move latest"
 **Interfaces:**
 - Produces: `build-release-binary.sh <goos> <goarch> <version> [outdir]` (outdir default `dist`). Writes `<outdir>/marga-runtime-<goos>-<goarch>[.exe]` and the sibling `.sha256` (BSD `shasum -a 256` output format: `<hash>  <filename>`). Exits 2 on a boundary not in the platform matrix.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Fake `go` records the last invocation's environment and args:
 
@@ -345,12 +345,12 @@ bash "$B" linux mips 2.6.0 "$WORK/dist" 2>/dev/null && { echo "FAIL: unsupported
 echo PASS
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `bash .github/workflows/scripts/build-release-binary.test.sh`
 Expected: non-zero (script missing).
 
-- [ ] **Step 3: Implement the script**
+- [x] **Step 3: Implement the script**
 
 Adapt the per-platform branches of `.github/workflows/scripts/build-executables.sh:80-130`:
 - `linux/amd64`: `CC=x86_64-linux-musl-gcc CXX=x86_64-linux-musl-g++`, tags `netgo,osusergo,sqlite_static`, ldflags `-s -w -buildid= -extldflags '-static' -X main.Version=v<version>`.
@@ -364,17 +364,17 @@ Adapt the per-platform branches of `.github/workflows/scripts/build-executables.
 - Before building, refuse an empty embedded UI (a UI-less binary compiles only when the directory is absent, and `//go:embed` then fails the build with a less obvious message):
   `[ -n "$(ls -A transports/bifrost-http/ui 2>/dev/null)" ] || { echo "error: transports/bifrost-http/ui is empty; run 'make build-ui' first" >&2; exit 1; }`
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `bash .github/workflows/scripts/build-release-binary.test.sh`
 Expected: `PASS`.
 
-- [ ] **Step 5: Build one real artifact locally**
+- [x] **Step 5: Build one real artifact locally**
 
 Run: `bash .github/workflows/scripts/setup-go-workspace.sh && make build-ui && bash .github/workflows/scripts/build-release-binary.sh linux amd64 2.6.0 /tmp/marga-dist && /tmp/marga-dist/marga-runtime-linux-amd64 -port 18081 -app-dir /tmp/marga-data & sleep 5; curl -sf http://127.0.0.1:18081/health && curl -s http://127.0.0.1:18081/ | head -c 120; kill %1`
 Expected: `/health` OK, `/` returns HTML, and the startup banner carries `v2.6.0`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add .github/workflows/scripts/build-release-binary.sh .github/workflows/scripts/build-release-binary.test.sh
@@ -392,7 +392,7 @@ git commit -m "build: single release-binary script for all five platforms"
 - Consumes: `require-go-workspace.sh`, `run-core-unit-tests.sh` (Tasks 1, 3).
 - Produces: workflow name `CI`; a single job `build`. `release.yml` reuses the same script set.
 
-- [ ] **Step 1: Write the workflow**
+- [x] **Step 1: Write the workflow**
 
 ```yaml
 name: CI
@@ -457,17 +457,17 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund && npm run i18n:check
 ```
 
-- [ ] **Step 2: Lint the workflow**
+- [x] **Step 2: Lint the workflow**
 
 Run: `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/ci.yml`
 Expected: no output, exit 0.
 
-- [ ] **Step 3: Dry-run the same steps locally**
+- [x] **Step 3: Dry-run the same steps locally**
 
 Run: `source .github/workflows/scripts/setup-go-workspace.sh && make build-ui && make build && bash .github/workflows/scripts/run-core-unit-tests.sh core && (cd framework && CI="" go test -timeout 20m ./... 2>&1 | tail -5)`
 Expected: all pass; record the wall-clock so the plan's "6–8 minutes" claim can be checked against the first real run.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add .github/workflows/ci.yml
@@ -485,7 +485,7 @@ git commit -m "ci: one lightweight build+unit-test workflow on dev"
 - Consumes: `build-release-binary.sh`, `compute-image-tags.sh`, `run-core-unit-tests.sh`, `install-cross-compilers.sh`.
 - Produces: GitHub Release `vX.Y.Z` with 10 files (5 binaries + 5 checksums) and images in both registries. Pre-release flag follows a `-` suffix in the tag.
 
-- [ ] **Step 1: Add the spike job first**
+- [x] **Step 1: Add the spike job first**
 
 Add to `release.yml` a `workflow_dispatch`-only trigger in addition to `push: tags: ['v*']`, and a job `spike-cross` with `if: github.event_name == 'workflow_dispatch'` that runs `bash .github/workflows/scripts/install-cross-compilers.sh`, `make build-ui`, then for each of `darwin amd64`, `darwin arm64`, `windows amd64` runs `build-release-binary.sh <goos> <goarch> 0.0.0 dist-spike` and uploads the artifacts. All other jobs get `if: github.event_name == 'push'`.
 
@@ -494,7 +494,7 @@ Add to `release.yml` a `workflow_dispatch`-only trigger in addition to `push: ta
 Run: `git push origin HEAD:dev` then trigger the workflow from the Actions UI (`Run workflow`).
 Expected: `spike-cross` green and three artifacts present. If a toolchain is missing, capture the failing command and stop — the fallback (Linux-only) is a user decision, not a builder decision.
 
-- [ ] **Step 3: Write the release jobs**
+- [x] **Step 3: Write the release jobs**
 
 | Job | Steps (exact) |
 |---|---|
@@ -505,19 +505,19 @@ Expected: `spike-cross` green and three artifacts present. If a toolchain is mis
 | `image` | `needs: [meta, verify]`; matrix `{arch, runner}` = `amd64/ubuntu-24.04`, `arm64/ubuntu-24.04-arm`; steps: checkout, setup-buildx, login GHCR (`GITHUB_TOKEN`) and Docker Hub (`vars.DOCKERHUB_USERNAME` / `secrets.DOCKERHUB_TOKEN`), fail fast if `vars.DOCKERHUB_USERNAME` is empty, `docker/build-push-action` pushing the tag list from `compute-image-tags.sh` for both registries, `cache-from/to: type=gha`. |
 | `image-manifest` | `needs: [meta, image]`; `docker buildx imagetools create` per registry combining `:v<version>-amd64` + `:v<version>-arm64` into `:v<version>`, `:<version>`, `:amd64`/`:arm64` targets already exist, and `:latest` only when `prerelease == false`. |
 
-- [ ] **Step 4: Lint**
+- [x] **Step 4: Lint**
 
 Run: `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/release.yml`
 Expected: no output, exit 0.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add .github/workflows/release.yml
 git commit -m "ci: tag-triggered release of binaries and multi-arch images"
 ```
 
-- [ ] **Step 6: State the verification limit**
+- [x] **Step 6: State the verification limit**
 
 A release cannot be verified without pushing a tag. The first real verification is a deliberate `git tag v0.0.1-spike && git push origin v0.0.1-spike`, run by the user, expecting: prerelease flagged, 10 assets, four image tags per registry, no `latest`.
 
@@ -532,16 +532,16 @@ A release cannot be verified without pushing a tag. The first real verification 
 - Consumes: `setup-go-workspace.sh`, `tests/docker-compose.yml`, `make setup-mcp-tests`.
 - Produces: `workflow_dispatch`-only workflow that runs the service-backed suites the light tier skips.
 
-- [ ] **Step 1: Write the workflow**
+- [x] **Step 1: Write the workflow**
 
 Steps: checkout; setup Go; setup Node; workspace; `docker compose -f tests/docker-compose.yml up -d`; wait loop `until curl -sf http://localhost:9000/v1/.well-known/ready; do sleep 2; done` (Weaviate) plus `nc -z localhost 50051` (gRPC) and `docker compose exec -T clickhouse wget --spider -q http://127.0.0.1:8123/ping`; `make setup-mcp-tests`; `make build-ui`; then `CI=1 go test -timeout 30m ./...` in `core`, `framework`, `transports`, `plugins/*/`; `docker compose -f tests/docker-compose.yml down -v` under `if: always()`.
 
-- [ ] **Step 2: Lint**
+- [x] **Step 2: Lint**
 
 Run: `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/full-tests.yml`
 Expected: no output, exit 0.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add .github/workflows/full-tests.yml
@@ -562,7 +562,7 @@ git commit -m "ci: on-demand full suite with service containers"
 **Interfaces:**
 - Produces: a tree where every remaining script is referenced by something that still exists.
 
-- [ ] **Step 1: Delete, then let the fallout name itself**
+- [x] **Step 1: Delete, then let the fallout name itself**
 
 Run the deletions, then:
 ```bash
@@ -571,22 +571,22 @@ grep -rn "npx/\|terraform/\|community/\|transports/Dockerfile" --include=*.sh --
 ```
 Expected: the second sweep reports the `docs/` mentions only (kept as history); the first reports only references to scripts on the keep-list after Step 2.
 
-- [ ] **Step 2: Repair remaining references**
+- [x] **Step 2: Repair remaining references**
 
 - `Makefile`: `test-integrations` still points at `test-integrations.sh` (kept) — no change. Remove the `LOCAL` branch from `docker-image` if Task 2 left one. No target reads `*/version`; leave those files alone.
 - `tests/e2e/api/runners/proxy/run-proxy-matrix.sh`: keeps using `harness-gateway.sh` (kept).
 - `docs/contributing/setting-up-repo.mdx`: update the `make docker-image` line to drop `LOCAL=1`.
 - `docs/plugins/building-dynamic-binary.mdx`: replace `-f transports/Dockerfile` / `-f transports/Dockerfile.debian` with `-f Dockerfile` / `-f Dockerfile.debian` and note `Dockerfile.debian` is not shipped.
 
-- [ ] **Step 3: Trim `.github/actionlint.yaml`**
+- [x] **Step 3: Trim `.github/actionlint.yaml`**
 
 Delete every entry under `self-hosted-runner` (no workflow uses `builder-8-32`, `arm-64-2cpu-8gb`, `codspeed-macro` anymore). If nothing remains, delete the file.
 
-- [ ] **Step 4: Trim `.github/dependabot.yml`**
+- [x] **Step 4: Trim `.github/dependabot.yml`**
 
 Keep `gomod` entries for `/core`, `/framework`, `/transports`, `/cli`, `/plugins/*`; keep `github-actions` for `/`. Delete `docker`, every `npm` entry, and every `examples/` entry.
 
-- [ ] **Step 5: Verify nothing is dangling**
+- [x] **Step 5: Verify nothing is dangling**
 
 Run:
 ```bash
@@ -597,7 +597,7 @@ ls .github/workflows/*.yml
 ```
 Expected: no `MISSING:` lines; exactly `ci.yml`, `release.yml`, `full-tests.yml`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A
@@ -614,7 +614,7 @@ git commit -m "chore: drop the bifrost release apparatus, npx packages and unuse
 **Interfaces:**
 - Consumes: artifact names (Task 5), image names and tags (Tasks 4, 7), variable names (Global Constraints).
 
-- [ ] **Step 1: Write the section**
+- [x] **Step 1: Write the section**
 
 Append (or replace the upstream installation block with) exactly:
 
@@ -657,12 +657,12 @@ CI (`ci.yml`) runs a light tier: no service containers, no MCP fixtures. Run
 change touches storage, queues, or MCP.
 ```
 
-- [ ] **Step 2: Verify the claims**
+- [x] **Step 2: Verify the claims**
 
 Run: `grep -n "marga-runtime" README.md | head` and confirm every artifact/tag/var name matches `compute-image-tags.sh` and `build-release-binary.sh` output.
 Expected: names identical; no reference to `npx`, R2, `downloads.getmaxim.ai`, or `maximhq/bifrost` images.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add README.md
