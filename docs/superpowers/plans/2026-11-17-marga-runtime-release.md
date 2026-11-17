@@ -26,6 +26,12 @@
 - Branch: `dev`. No `main`.
 - Platform matrix: `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`, `windows/amd64`.
 
+## Status (2026-11-17)
+
+Tasks 1–10 are implemented and verified locally; every step box is checked except the one that needs a human-run workflow dispatch. Local evidence: the four `*.test.sh` suites pass, `actionlint` v1.7.12 is clean on `ci.yml`/`release.yml`/`full-tests.yml`, `CI=1 make build` produces `tmp/bifrost-http` and exits non-zero once `go.work` is moved aside, the image boots with `v2.6.0` on `/health` and HTML on `/`, the linux/amd64 release artifact boots with the matching banner, and the Task 9 sweeps report no `MISSING:` script and exactly three workflows.
+
+Outstanding, operator-only: Task 7 Step 2 — push `dev` and dispatch `release.yml`'s `spike-cross` job; and the `v0.0.1-spike` rehearsal tag that is the only end-to-end release proof.
+
 ## Review Focus
 
 1. **A build that resolves published `maximhq` modules instead of the local tree** — a build that goes green while compiling someone else's code. Pinned by Task 1's guard test.

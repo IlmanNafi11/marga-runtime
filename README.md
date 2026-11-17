@@ -100,12 +100,14 @@ After the **first** publish, flip the GHCR package to public once, in the packag
 
 ## Syncing from upstream
 
+Upstream is `maximhq/bifrost`; the remote that tracks it in this clone may be named anything, so check `git remote -v` before the fetch.
+
 ```bash
-git fetch upstream
+git fetch upstream          # or whatever local name points at maximhq/bifrost
 git merge upstream/dev
 ```
 
-Conflicts concentrate in what this fork deleted (the upstream release workflows, the noun-installer and infrastructure trees) and in the `Makefile` build targets; keep the workspace-only build contract when resolving.
+Conflicts concentrate in what this fork deleted (the upstream release workflows, the npx and Terraform trees) and in the `Makefile` build targets; keep the workspace-only build contract when resolving.
 
 ## License
 
