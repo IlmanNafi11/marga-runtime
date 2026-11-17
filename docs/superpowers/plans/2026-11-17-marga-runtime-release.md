@@ -30,9 +30,11 @@
 
 Tasks 1–10 are implemented and verified locally; every step box is checked. Local evidence: the five `*.test.sh` suites pass, `actionlint` v1.7.12 is clean on `ci.yml`/`release.yml`/`full-tests.yml`, `CI=1 make build` produces `tmp/bifrost-http` and exits non-zero once `go.work` is moved aside, the image boots with `v2.6.0` on `/health` and HTML on `/`, and the linux/amd64 release artifact is a static musl binary that boots with the matching banner.
 
-`spike-cross` is green on the real runner (run 44044080277): `darwin/amd64`, `darwin/arm64` and `windows/amd64` each built, checksummed and uploaded an artifact, so the cross toolchains work. Getting there needed three fixes the local contract tests did not cover, all pinned by new cases now: `setup-go` read the gitignored `go.work`; `install-cross-compilers.sh` tripped over the EC2 runner's regional `apt-mirrors.txt`; and `build-release-binary.sh` neither exported the per-platform `CC` nor resolved a relative outdir before its `cd`.
+`spike-cross` is green on the real runner (runs 44044080277 and 44068936825): `darwin/amd64`, `darwin/arm64` and `windows/amd64` each built, checksummed and uploaded an artifact, so the cross toolchains work. Getting there needed three fixes the local contract tests did not cover, all pinned by new cases now: `setup-go` read the gitignored `go.work`; `install-cross-compilers.sh` tripped over the EC2 runner's regional `apt-mirrors.txt`; and `build-release-binary.sh` neither exported the per-platform `CC` nor resolved a relative outdir before its `cd`.
 
-Outstanding, operator-only: the `v0.0.1-spike` rehearsal tag, which is the only end-to-end release proof.
+`ci.yml` is green end to end (run 44066288198, 17m). The first attempt failed on 44 `framework/vectorstore` tests and on `plugins/semanticcache`, because those suites gate their integration paths on `testing.Short()`, not on `CI`; the light tier now passes `-short` in `ci.yml` and in `verify`, and the Redis config/TLS-shape tests assert on the client builder (`RedisConfig.newClient()`) instead of a store that pings. `full-tests.yml` still runs without `-short`.
+
+Outstanding, operator-only: the `v0.0.1-spike` rehearsal tag, which is the only end-to-end proof of the publish, image, manifest and release-asset steps.
 
 ## Review Focus
 
