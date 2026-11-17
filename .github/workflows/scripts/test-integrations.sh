@@ -199,11 +199,9 @@ else
   # Linux static linking). Reproducing it here by hand means the integration suite can
   # certify a binary that differs from the artifact CI actually ships.
   #
-  # LOCAL=1 keeps the go.work this script's caller just wrote. Without it the target sets
-  # GOWORK=off and resolves core/framework/plugins from the module proxy, which fails to
-  # build any change that spans transports and an unreleased framework - the same reason
-  # the SKIP_GATEWAY_BUILD branch above exists.
-  (cd "$REPO_ROOT" && make LOCAL=1 build)
+  # `build` always compiles against the workspace, so the binary this suite certifies is
+  # the same one CI ships.
+  (cd "$REPO_ROOT" && make build)
 fi
 
 if [ "$SKIP_GATEWAY_START" != "1" ]; then

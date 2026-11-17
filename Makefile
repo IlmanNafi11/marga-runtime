@@ -12,7 +12,7 @@ GOTESTSUM_FORMAT ?= standard-verbose
 FLOW ?=
 VERSION ?= dev-build
 LOCAL ?=
-DEBUG ?=
+REQUIRE_WORKSPACE = bash .github/workflows/scripts/require-go-workspace.sh
 COMPAT ?=
 
 # Colors for output
@@ -89,7 +89,6 @@ help: ## Show this help message
 	@$(ECHO) "  LOG_STYLE         Logger output format: json|pretty (default: json)"
 	@$(ECHO) "  LOG_LEVEL         Logger level: debug|info|warn|error (default: info)"
 	@$(ECHO) "  APP_DIR           App data directory inside container (default: /app/data)"
-	@$(ECHO) "  LOCAL             Use local go.work for builds (e.g., make build LOCAL=1)"
 	@$(ECHO) "  DEBUG             Enable delve debugger on port 2345 (e.g., make dev DEBUG=1, make test-core DEBUG=1, make test-governance DEBUG=1)"
 	@$(ECHO) ""
 	@$(ECHO) "$(YELLOW)Test Configuration:$(NC)"
@@ -355,15 +354,10 @@ build-ui: install-ui ## Build ui
 	@$(USE_NODE); cd ui && npm run build && npm run copy-build
 
 build: build-ui ## Build bifrost-http binary (BUILD_TAGS adds Go build tags; the MCP harness passes harness)
-	@if [ -n "$(LOCAL)" ]; then \
-		$(ECHO) "$(GREEN)╔═══════════════════════════════════════════════╗$(NC)"; \
-		$(ECHO) "$(GREEN)║  Building bifrost-http with local go.work...  ║$(NC)"; \
-		$(ECHO) "$(GREEN)╚═══════════════════════════════════════════════╝$(NC)"; \
-	else \
-		$(ECHO) "$(GREEN)╔═══════════════════════════════════════╗$(NC)"; \
+	@$(REQUIRE_WORKSPACE)
+	@$(ECHO) "$(GREEN)╔═══════════════════════════════════════╗$(NC)"; \
 		$(ECHO) "$(GREEN)║  Building bifrost-http...             ║$(NC)"; \
-		$(ECHO) "$(GREEN)╚═══════════════════════════════════════╝$(NC)"; \
-	fi
+		$(ECHO) "$(GREEN)╚═══════════════════════════════════════╝$(NC)"
 	@if [ -n "$(DYNAMIC)" ]; then \
 		$(ECHO) "$(YELLOW)Note: This will create a dynamically linked build.$(NC)"; \
 	else \
@@ -392,7 +386,7 @@ build: build-ui ## Build bifrost-http binary (BUILD_TAGS adds Go build tags; the
 	if [ "$$TARGET_OS" = "linux" ] && [ "$$HOST_OS" = "linux" ]; then \
 		if [ -n "$(DYNAMIC)" ]; then \
 			$(ECHO) "$(CYAN)Building for $$TARGET_OS/$$TARGET_ARCH with dynamic linking...$(NC)"; \
-			cd transports/bifrost-http && CGO_ENABLED=1 GOOS=$$TARGET_OS GOARCH=$$TARGET_ARCH $(if $(LOCAL),,GOWORK=off) go build \
+			cd transports/bifrost-http && CGO_ENABLED=1 GOOS=$$TARGET_OS GOARCH=$$TARGET_ARCH go build \
 				-ldflags="-w -s -X main.Version=v$(VERSION)" \
 				-a -trimpath \
 				$(if $(BUILD_TAGS),-tags "$(BUILD_TAGS)") \
@@ -400,7 +394,7 @@ build: build-ui ## Build bifrost-http binary (BUILD_TAGS adds Go build tags; the
 				.; \
 		else \
 			$(ECHO) "$(CYAN)Building for $$TARGET_OS/$$TARGET_ARCH with static linking...$(NC)"; \
-			cd transports/bifrost-http && CGO_ENABLED=1 GOOS=$$TARGET_OS GOARCH=$$TARGET_ARCH $(if $(LOCAL),,GOWORK=off) go build \
+			cd transports/bifrost-http && CGO_ENABLED=1 GOOS=$$TARGET_OS GOARCH=$$TARGET_ARCH go build \
 				-ldflags="-w -s -extldflags "-static" -X main.Version=v$(VERSION)" \
 				-a -trimpath \
 				-tags "sqlite_static $(BUILD_TAGS)" \
@@ -410,7 +404,7 @@ build: build-ui ## Build bifrost-http binary (BUILD_TAGS adds Go build tags; the
 		$(ECHO) "$(GREEN)Built: tmp/bifrost-http (version: v$(VERSION))$(NC)"; \
 	elif [ "$$TARGET_OS" = "$$HOST_OS" ] && [ "$$TARGET_ARCH" = "$$HOST_ARCH" ]; then \
 		$(ECHO) "$(CYAN)Building for $$TARGET_OS/$$TARGET_ARCH (native build with CGO)...$(NC)"; \
-		cd transports/bifrost-http && CGO_ENABLED=1 GOOS=$$TARGET_OS GOARCH=$$TARGET_ARCH $(if $(LOCAL),,GOWORK=off) go build \
+		cd transports/bifrost-http && CGO_ENABLED=1 GOOS=$$TARGET_OS GOARCH=$$TARGET_ARCH go build \
 			-ldflags="-w -s -X main.Version=v$(VERSION)" \
 			-a -trimpath \
 			-tags "sqlite_static $(BUILD_TAGS)" \
@@ -424,14 +418,16 @@ build: build-ui ## Build bifrost-http binary (BUILD_TAGS adds Go build tags; the
 	fi
 
 build-cli: ## Build bifrost CLI binary
+	@$(REQUIRE_WORKSPACE)
 	@$(ECHO) "$(GREEN)Building bifrost CLI...$(NC)"
 	@mkdir -p ./tmp
-	@cd cli && $(if $(LOCAL),,GOWORK=off) go build -ldflags "-X main.version=v0.1.1-dev" -o ../tmp/bifrost .
+	@cd cli && go build -ldflags "-X main.version=v0.1.1-dev" -o ../tmp/bifrost .
 	@$(ECHO) "$(GREEN)Built: tmp/bifrost$(NC)"
 
 _build-with-docker: # Internal target for Docker-based cross-compilation
 	@# set -e for the same reason as build-http above: without it a failed
 	@# `docker run` still reaches the "Built:" echo and returns 0.
+	@$(REQUIRE_WORKSPACE)
 	@set -e; \
 	$(ECHO) "$(CYAN)Using Docker for cross-compilation...$(NC)"; \
 	if [ "$(TARGET_OS)" = "linux" ]; then \
@@ -444,7 +440,6 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 				-e CGO_ENABLED=1 \
 				-e GOOS=$(TARGET_OS) \
 				-e GOARCH=$(TARGET_ARCH) \
-				 $(if $(LOCAL),,-e GOWORK=off) \
 				golang:1.27.3-alpine3.24@sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c58525ec9d8170fd \
 				sh -c "apk add --no-cache gcc musl-dev && \
 				go build \
@@ -462,7 +457,6 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 				-e CGO_ENABLED=1 \
 				-e GOOS=$(TARGET_OS) \
 				-e GOARCH=$(TARGET_ARCH) \
-				 $(if $(LOCAL),,-e GOWORK=off) \
 				golang:1.27.3-alpine3.24@sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c58525ec9d8170fd \
 				sh -c "apk add --no-cache gcc musl-dev && \
 				go build \
@@ -577,7 +571,7 @@ generate-html-reports: ## Convert existing XML reports to HTML
 test: install-gotestsum ## Run tests for bifrost-http
 	@$(ECHO) "$(GREEN)Running bifrost-http tests...$(NC)"
 	@mkdir -p $(TEST_REPORTS_DIR)
-	@cd transports/bifrost-http && GOWORK=off gotestsum \
+	@cd transports/bifrost-http && gotestsum \
 		--format=$(GOTESTSUM_FORMAT) \
 		--junitfile=../../$(TEST_REPORTS_DIR)/bifrost-http.xml \
 		-- -v ./...
@@ -636,9 +630,9 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 			$(ECHO) "$(CYAN)Running Test$${PROVIDER_TEST_NAME}/$${PROVIDER_TEST_NAME}Tests/$$CLEAN_TESTCASE...$(NC)"; \
 			REPORT_FILE="$(TEST_REPORTS_DIR)/core-$(PROVIDER)-$$(echo $$CLEAN_TESTCASE | sed 's|/|_|g').xml"; \
 			if [ -n "$(DEBUG)" ]; then \
-				cd core/providers/$(PROVIDER) && GOWORK=off dlv test --headless --listen=:2345 --api-version=2 -- -test.v -test.run "^Test$${PROVIDER_TEST_NAME}$$/.*Tests/$$CLEAN_TESTCASE$$" || TEST_FAILED=1; \
+				cd core/providers/$(PROVIDER) && dlv test --headless --listen=:2345 --api-version=2 -- -test.v -test.run "^Test$${PROVIDER_TEST_NAME}$$/.*Tests/$$CLEAN_TESTCASE$$" || TEST_FAILED=1; \
 			else \
-				cd core/providers/$(PROVIDER) && GOWORK=off gotestsum \
+				cd core/providers/$(PROVIDER) && gotestsum \
 					--format=$(GOTESTSUM_FORMAT) \
 					--junitfile=../../../$$REPORT_FILE \
 					-- -v -timeout 20m -run "^Test$${PROVIDER_TEST_NAME}$$/.*Tests/$$CLEAN_TESTCASE$$" || TEST_FAILED=1; \
@@ -664,9 +658,9 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 			$(ECHO) "$(CYAN)Running tests matching '$(PATTERN)' for $${PROVIDER_TEST_NAME}...$(NC)"; \
 			REPORT_FILE="$(TEST_REPORTS_DIR)/core-$(PROVIDER)-$(PATTERN).xml"; \
 			if [ -n "$(DEBUG)" ]; then \
-				cd core/providers/$(PROVIDER) && GOWORK=off dlv test --headless --listen=:2345 --api-version=2 -- -test.v -test.run ".*$(PATTERN).*" || TEST_FAILED=1; \
+				cd core/providers/$(PROVIDER) && dlv test --headless --listen=:2345 --api-version=2 -- -test.v -test.run ".*$(PATTERN).*" || TEST_FAILED=1; \
 			else \
-				cd core/providers/$(PROVIDER) && GOWORK=off gotestsum \
+				cd core/providers/$(PROVIDER) && gotestsum \
 					--format=$(GOTESTSUM_FORMAT) \
 					--junitfile=../../../$$REPORT_FILE \
 					-- -v -timeout 20m -run ".*$(PATTERN).*" || TEST_FAILED=1; \
@@ -692,9 +686,9 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 			$(ECHO) "$(CYAN)Running Test$${PROVIDER_TEST_NAME}...$(NC)"; \
 			REPORT_FILE="$(TEST_REPORTS_DIR)/core-$(PROVIDER).xml"; \
 			if [ -n "$(DEBUG)" ]; then \
-				cd core/providers/$(PROVIDER) && GOWORK=off dlv test --headless --listen=:2345 --api-version=2 -- -test.v -test.run "^Test$${PROVIDER_TEST_NAME}$$" || TEST_FAILED=1; \
+				cd core/providers/$(PROVIDER) && dlv test --headless --listen=:2345 --api-version=2 -- -test.v -test.run "^Test$${PROVIDER_TEST_NAME}$$" || TEST_FAILED=1; \
 			else \
-				cd core/providers/$(PROVIDER) && GOWORK=off gotestsum \
+				cd core/providers/$(PROVIDER) && gotestsum \
 					--format=$(GOTESTSUM_FORMAT) \
 					--junitfile=../../../$$REPORT_FILE \
 					-- -v -timeout 20m -run "^Test$${PROVIDER_TEST_NAME}$$" || TEST_FAILED=1; \
@@ -727,9 +721,9 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 			$(ECHO) "$(CYAN)Running tests matching '$(PATTERN)' across core and all providers...$(NC)"; \
 			REPORT_FILE="$(TEST_REPORTS_DIR)/core-all-$(PATTERN).xml"; \
 			if [ -n "$(DEBUG)" ]; then \
-				cd core && GOWORK=off dlv test --headless --listen=:2345 --api-version=2 . ./providers/... -- -test.v -test.run ".*$(PATTERN).*" || TEST_FAILED=1; \
+				cd core && dlv test --headless --listen=:2345 --api-version=2 . ./providers/... -- -test.v -test.run ".*$(PATTERN).*" || TEST_FAILED=1; \
 			else \
-				cd core && GOWORK=off gotestsum \
+				cd core && gotestsum \
 					--format=$(GOTESTSUM_FORMAT) \
 					--junitfile=../$$REPORT_FILE \
 					-- -v -timeout 20m -run ".*$(PATTERN).*" . ./providers/... || TEST_FAILED=1; \
@@ -737,9 +731,9 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 		else \
 			REPORT_FILE="$(TEST_REPORTS_DIR)/core-all.xml"; \
 			if [ -n "$(DEBUG)" ]; then \
-				cd core && GOWORK=off dlv test --headless --listen=:2345 --api-version=2 ./providers/... -- -test.v || TEST_FAILED=1; \
+				cd core && dlv test --headless --listen=:2345 --api-version=2 ./providers/... -- -test.v || TEST_FAILED=1; \
 			else \
-				cd core && GOWORK=off gotestsum \
+				cd core && gotestsum \
 					--format=$(GOTESTSUM_FORMAT) \
 					--junitfile=../$$REPORT_FILE \
 					-- -v ./providers/... || TEST_FAILED=1; \
@@ -1013,9 +1007,9 @@ test-governance: install-gotestsum $(if $(DEBUG),install-delve) ## Run governanc
 		$(ECHO) "$(CYAN)Running test case: $(TESTCASE)$(NC)"; \
 		REPORT_FILE="$(TEST_REPORTS_DIR)/governance-$$(echo $(TESTCASE) | sed 's|/|_|g').xml"; \
 		if [ -n "$(DEBUG)" ]; then \
-			cd tests/governance && GOWORK=off dlv test --headless --listen=:2345 --api-version=2 -- -test.v -test.run "^$(TESTCASE)$$" || TEST_FAILED=1; \
+			cd tests/governance && dlv test --headless --listen=:2345 --api-version=2 -- -test.v -test.run "^$(TESTCASE)$$" || TEST_FAILED=1; \
 		else \
-			cd tests/governance && GOWORK=off gotestsum \
+			cd tests/governance && gotestsum \
 				--format=$(GOTESTSUM_FORMAT) \
 				--junitfile=../../$$REPORT_FILE \
 				-- -v -run "^$(TESTCASE)$$" || TEST_FAILED=1; \
@@ -1041,9 +1035,9 @@ test-governance: install-gotestsum $(if $(DEBUG),install-delve) ## Run governanc
 		$(ECHO) "$(CYAN)Running tests matching '$(PATTERN)'...$(NC)"; \
 		REPORT_FILE="$(TEST_REPORTS_DIR)/governance-$(PATTERN).xml"; \
 		if [ -n "$(DEBUG)" ]; then \
-			cd tests/governance && GOWORK=off dlv test --headless --listen=:2345 --api-version=2 -- -test.v -test.run ".*$(PATTERN).*" || TEST_FAILED=1; \
+			cd tests/governance && dlv test --headless --listen=:2345 --api-version=2 -- -test.v -test.run ".*$(PATTERN).*" || TEST_FAILED=1; \
 		else \
-			cd tests/governance && GOWORK=off gotestsum \
+			cd tests/governance && gotestsum \
 				--format=$(GOTESTSUM_FORMAT) \
 				--junitfile=../../$$REPORT_FILE \
 				-- -v -run ".*$(PATTERN).*" || TEST_FAILED=1; \
@@ -1069,9 +1063,9 @@ test-governance: install-gotestsum $(if $(DEBUG),install-delve) ## Run governanc
 		$(ECHO) "$(CYAN)Running all governance tests...$(NC)"; \
 		REPORT_FILE="$(TEST_REPORTS_DIR)/governance-all.xml"; \
 		if [ -n "$(DEBUG)" ]; then \
-			cd tests/governance && GOWORK=off dlv test --headless --listen=:2345 --api-version=2 -- -test.v || TEST_FAILED=1; \
+			cd tests/governance && dlv test --headless --listen=:2345 --api-version=2 -- -test.v || TEST_FAILED=1; \
 		else \
-			cd tests/governance && GOWORK=off gotestsum \
+			cd tests/governance && gotestsum \
 				--format=$(GOTESTSUM_FORMAT) \
 				--junitfile=../../$$REPORT_FILE \
 				-- -v || TEST_FAILED=1; \
@@ -1148,7 +1142,7 @@ setup-mcp-tests: ## Build all MCP test servers in examples/mcps/ (Go and TypeScr
 			if [ -f "$$mcp_dir/go.mod" ]; then \
 				$(ECHO) "$(CYAN)Building $$mcp_name (Go)...$(NC)"; \
 				mkdir -p "$$mcp_dir/bin"; \
-				if cd "$$mcp_dir" && GOWORK=off go build -o bin/$$mcp_name . && cd - > /dev/null; then \
+				if cd "$$mcp_dir" && go build -o bin/$$mcp_name . && cd - > /dev/null; then \
 					$(ECHO) "$(GREEN)  ✓ $$mcp_name$(NC)"; \
 				else \
 					$(ECHO) "$(RED)  ✗ $$mcp_name failed$(NC)"; \
@@ -1203,7 +1197,7 @@ test-mcp: install-gotestsum setup-mcp-tests ## Run MCP tests (Usage: make test-m
 			$(ECHO) "$(CYAN)Running $(TYPE) test: $(TESTCASE)...$(NC)"; \
 			SAFE_TESTCASE=$$($(ECHO) "$(TESTCASE)" | sed 's|/|_|g'); \
 			REPORT_FILE="$(TEST_REPORTS_DIR)/mcp-$(TYPE)-$$SAFE_TESTCASE.xml"; \
-			cd core/internal/mcptests && GOWORK=off gotestsum \
+			cd core/internal/mcptests && gotestsum \
 				--format=$(GOTESTSUM_FORMAT) \
 				--junitfile=../../../$$REPORT_FILE \
 				-- -v -race -run "^$(TESTCASE)$$" . || TEST_FAILED=1; \
@@ -1211,14 +1205,14 @@ test-mcp: install-gotestsum setup-mcp-tests ## Run MCP tests (Usage: make test-m
 			$(ECHO) "$(CYAN)Running $(TYPE) tests matching '$(PATTERN)'...$(NC)"; \
 			SAFE_PATTERN=$$($(ECHO) "$(PATTERN)" | sed 's|/|_|g'); \
 			REPORT_FILE="$(TEST_REPORTS_DIR)/mcp-$(TYPE)-$$SAFE_PATTERN.xml"; \
-			cd core/internal/mcptests && GOWORK=off gotestsum \
+			cd core/internal/mcptests && gotestsum \
 				--format=$(GOTESTSUM_FORMAT) \
 				--junitfile=../../../$$REPORT_FILE \
 				-- -v -race -run ".*$(PATTERN).*" . || TEST_FAILED=1; \
 		else \
 			$(ECHO) "$(CYAN)Running all $(TYPE) tests (pattern: $$TEST_PATTERN)...$(NC)"; \
 			REPORT_FILE="$(TEST_REPORTS_DIR)/mcp-$(TYPE).xml"; \
-			cd core/internal/mcptests && GOWORK=off gotestsum \
+			cd core/internal/mcptests && gotestsum \
 				--format=$(GOTESTSUM_FORMAT) \
 				--junitfile=../../../$$REPORT_FILE \
 				-- -v -race -run "$$TEST_PATTERN" . || TEST_FAILED=1; \
@@ -1243,21 +1237,21 @@ test-mcp: install-gotestsum setup-mcp-tests ## Run MCP tests (Usage: make test-m
 		if [ -n "$(TESTCASE)" ]; then \
 			$(ECHO) "$(CYAN)Running test case: $(TESTCASE) across all MCP tests...$(NC)"; \
 			REPORT_FILE="$(TEST_REPORTS_DIR)/mcp-all-$(TESTCASE).xml"; \
-			cd core/internal/mcptests && GOWORK=off gotestsum \
+			cd core/internal/mcptests && gotestsum \
 				--format=$(GOTESTSUM_FORMAT) \
 				--junitfile=../../../$$REPORT_FILE \
 				-- -v -race -run "^$(TESTCASE)$$" || TEST_FAILED=1; \
 		elif [ -n "$(PATTERN)" ]; then \
 			$(ECHO) "$(CYAN)Running tests matching '$(PATTERN)' across all MCP tests...$(NC)"; \
 			REPORT_FILE="$(TEST_REPORTS_DIR)/mcp-all-$(PATTERN).xml"; \
-			cd core/internal/mcptests && GOWORK=off gotestsum \
+			cd core/internal/mcptests && gotestsum \
 				--format=$(GOTESTSUM_FORMAT) \
 				--junitfile=../../../$$REPORT_FILE \
 				-- -v -race -run ".*$(PATTERN).*" || TEST_FAILED=1; \
 		else \
 			$(ECHO) "$(CYAN)Running all MCP tests...$(NC)"; \
 			REPORT_FILE="$(TEST_REPORTS_DIR)/mcp-all.xml"; \
-			cd core/internal/mcptests && GOWORK=off gotestsum \
+			cd core/internal/mcptests && gotestsum \
 				--format=$(GOTESTSUM_FORMAT) \
 				--junitfile=../../../$$REPORT_FILE \
 				-- -v -race || TEST_FAILED=1; \
@@ -1331,16 +1325,16 @@ test-semantic-cache: ## Run semantic_cache e2e tests (Usage: [CACHE_TYPE=direct|
 	if command -v trail >/dev/null 2>&1; then \
 		$(ECHO) "$(GREEN)trail detected — wrapping run in 'trail run' (session id will be printed by trail)$(NC)"; \
 		if [ -n "$$filter" ]; then \
-			exec trail run -- env RUN_FORCE=$${RUN_FORCE:-1} GOWORK=off go test -v -run "$$filter" ./...; \
+			exec trail run -- env RUN_FORCE=$${RUN_FORCE:-1} go test -v -run "$$filter" ./...; \
 		else \
-			exec trail run -- env RUN_FORCE=$${RUN_FORCE:-1} GOWORK=off go test -v ./...; \
+			exec trail run -- env RUN_FORCE=$${RUN_FORCE:-1} go test -v ./...; \
 		fi; \
 	else \
 		$(ECHO) "$(YELLOW)trail not on PATH — falling back to direct go test (install 'trail' for capture-based debugging)$(NC)"; \
 		if [ -n "$$filter" ]; then \
-			exec env RUN_FORCE=$${RUN_FORCE:-1} GOWORK=off go test -v -run "$$filter" ./...; \
+			exec env RUN_FORCE=$${RUN_FORCE:-1} go test -v -run "$$filter" ./...; \
 		else \
-			exec env RUN_FORCE=$${RUN_FORCE:-1} GOWORK=off go test -v ./...; \
+			exec env RUN_FORCE=$${RUN_FORCE:-1} go test -v ./...; \
 		fi; \
 	fi
 
@@ -1367,7 +1361,7 @@ _test-semantic-cache-complete-inner:
 	@$(ECHO) "$(CYAN)═══════════════════════════════════════════════════════════$(NC)"
 	@$(ECHO) "$(CYAN)  Running semantic_cache E2E tests                          $(NC)"
 	@$(ECHO) "$(CYAN)═══════════════════════════════════════════════════════════$(NC)"
-	@cd tests/semanticcache && RUN_FORCE=$${RUN_FORCE:-1} GOWORK=off go test -v ./...
+	@cd tests/semanticcache && RUN_FORCE=$${RUN_FORCE:-1} go test -v ./...
 	@$(ECHO) ""
 	@$(ECHO) "$(GREEN)═══════════════════════════════════════════════════════════$(NC)"
 	@$(ECHO) "$(GREEN)  E2E tests completed                                      $(NC)"
@@ -1695,7 +1689,7 @@ test-integrations: ## Run Python + TypeScript SDK integration tests in parallel,
 			exit 1 ;; \
 	esac; \
 	: "Build: reuse tmp/bifrost-http when present, BUILD=1 forces the script's own"; \
-	: "'make LOCAL=1 build'. Not a prerequisite on 'build': that pulls in build-ui and is"; \
+	: "'make build'. Not a prerequisite on 'build': that pulls in build-ui and is"; \
 	: ".PHONY, so every run would rebuild the whole Next.js UI before any test could start,"; \
 	: "and no SDK integration test touches the UI. The mtime is printed because silently"; \
 	: "reusing a weeks-old binary is the obvious hazard of defaulting to skip."; \
@@ -1814,7 +1808,7 @@ run-e2e-api-proxy: ## Proxy e2e flow, same as make run-e2e-api PROXY=1
 run-mcp-codemode-test: install-newman ## Run the hermetic MCP Code Mode E2E suite (no API keys, no paid calls). Builds tmp/bifrost-http from local code unless BINARY is given (Usage: make run-mcp-codemode-test [BINARY=path/to/bifrost-http])
 	@BINARY="$(BINARY)"; \
 	if [ -z "$$BINARY" ]; then \
-		$(MAKE) build LOCAL=1 || exit 1; \
+		$(MAKE) build || exit 1; \
 		BINARY=tmp/bifrost-http; \
 	fi; \
 	if [ ! -x "$$BINARY" ]; then \
@@ -1828,7 +1822,7 @@ run-mcp-codemode-test: install-newman ## Run the hermetic MCP Code Mode E2E suit
 run-mcp-harness-test: install-newman ## Run the MCP harness (generated by tests/e2e/api/runners/build-mcp-harness.mjs), one folder per test case. Hermetic: boots its own Bifrost and an mcpchaos fleet. Builds tmp/bifrost-http from local code with the harness build tag (OAS-45 needs it) unless BINARY is given (Usage: make run-mcp-harness-test [BINARY=path/to/bifrost-http] [FOLDER="ADM"] [HARNESS_PORT=8093] [CHAOS_PORT=8494] [INPUT_PORT=8496] [APPS_PORT=8497])
 	@BINARY="$(BINARY)"; \
 	if [ -z "$$BINARY" ]; then \
-		$(MAKE) build LOCAL=1 BUILD_TAGS=harness || exit 1; \
+		$(MAKE) build BUILD_TAGS=harness || exit 1; \
 		BINARY=tmp/bifrost-http; \
 	fi; \
 	if [ ! -x "$$BINARY" ]; then \
@@ -1843,7 +1837,7 @@ run-mcp-harness-test: install-newman ## Run the MCP harness (generated by tests/
 run-log-store-matrix: ## Relay and LLM log permutation matrix on every log store: sqlite, postgres, and hybrid over a local fake S3 (with and without offload exclusions). Hermetic: local upstreams, no API keys, no paid calls. Postgres cells need POSTGRES_URL. Builds tmp/bifrost-http unless BINARY is given (Usage: make run-log-store-matrix [BINARY=path/to/bifrost-http] [CELLS=sqlite,sqlite+s3] [SUITES=pricing,proxy] [PARALLEL=3] [POSTGRES_URL=postgresql://bifrost:bifrost_password@localhost:5432/postgres] [SKIP_CONTENT_MATRIX=1])
 	@$(USE_NODE); BINARY="$(BINARY)"; \
 	if [ -z "$$BINARY" ]; then \
-		$(MAKE) build LOCAL=1 || exit 1; \
+		$(MAKE) build || exit 1; \
 		BINARY=tmp/bifrost-http; \
 	fi; \
 	if [ ! -x "$$BINARY" ]; then \
@@ -1859,7 +1853,7 @@ run-log-store-matrix: ## Relay and LLM log permutation matrix on every log store
 run-log-store-matrix: ## Relay and LLM log permutation matrix on every log store: sqlite, postgres, and hybrid over a local fake S3 (with and without offload exclusions). Hermetic: local upstreams, no API keys, no paid calls. Postgres cells need POSTGRES_URL. Builds tmp/bifrost-http unless BINARY is given (Usage: make run-log-store-matrix [BINARY=path/to/bifrost-http] [CELLS=sqlite,sqlite+s3] [SUITES=pricing,proxy] [PARALLEL=3] [POSTGRES_URL=postgresql://bifrost:bifrost_password@localhost:5432/postgres] [SKIP_CONTENT_MATRIX=1])
 	@$(USE_NODE); BINARY="$(BINARY)"; \
 	if [ -z "$$BINARY" ]; then \
-		$(MAKE) build LOCAL=1 || exit 1; \
+		$(MAKE) build || exit 1; \
 		BINARY=tmp/bifrost-http; \
 	fi; \
 	if [ ! -x "$$BINARY" ]; then \
@@ -1876,7 +1870,7 @@ run-warp-test: install-newman ## Run the Warp E2E suite: boots Bifrost on a thro
 	@$(EXPOSE_ENV); \
 	BINARY="$(BINARY)"; \
 	if [ -z "$$BINARY" ]; then \
-		$(MAKE) build LOCAL=1 || exit 1; \
+		$(MAKE) build || exit 1; \
 		BINARY=tmp/bifrost-http; \
 	fi; \
 	if [ ! -x "$$BINARY" ]; then \
@@ -1961,7 +1955,7 @@ mod-tidy: ## Run go mod tidy on modules (Usage: make mod-tidy [MODULE=all|cli|co
 	@$(ECHO) "$(GREEN)Running go mod tidy...$(NC)"
 	@if [ "$(MODULE)" = "all" ] || [ "$(MODULE)" = "cli" ]; then \
 		$(ECHO) "$(CYAN)Tidying cli...$(NC)"; \
-		cd cli && $(if $(LOCAL),,GOWORK=off) go mod tidy && $(ECHO) "$(GREEN)  ✓ cli$(NC)"; \
+		cd cli && go mod tidy && $(ECHO) "$(GREEN)  ✓ cli$(NC)"; \
 	fi
 	@if [ "$(MODULE)" = "all" ] || [ "$(MODULE)" = "core" ]; then \
 		$(ECHO) "$(CYAN)Tidying core...$(NC)"; \
@@ -2003,7 +1997,7 @@ test-cli-integration: ## Build the CLI and test configuration and management com
 test-cli: install-gotestsum ## Run CLI tests
 	@$(ECHO) "$(GREEN)Running CLI tests...$(NC)"
 	@mkdir -p $(TEST_REPORTS_DIR)
-	@cd cli && GOWORK=off gotestsum \
+	@cd cli && gotestsum \
 		--format=$(GOTESTSUM_FORMAT) \
 		--junitfile=../$(TEST_REPORTS_DIR)/cli.xml \
 		-- ./...
@@ -2045,7 +2039,7 @@ test-live: install-gotestsum ## Run GPT Live e2e tests against a running gateway
 	if [ -n "$(TESTCASE)" ]; then RUN_FLAG="-run ^$(TESTCASE)$$"; elif [ -n "$(PATTERN)" ]; then RUN_FLAG="-run .*$(PATTERN).*"; \
 	elif [ "$${LIVE_UPSTREAM:-fake}" = "real" ]; then RUN_FLAG="-run ^Test(Real|SDK)"; fi; \
 	REPORT_FILE="$(TEST_REPORTS_DIR)/live.xml"; \
-	cd tests/live && GOWORK=off gotestsum \
+	cd tests/live && gotestsum \
 		--format=$(GOTESTSUM_FORMAT) \
 		--junitfile=../../$$REPORT_FILE \
 		-- -v -timeout 900s $$RUN_FLAG; \
@@ -2061,7 +2055,7 @@ test-live-long: install-gotestsum ## Run the long GPT Live sessions: 17 min on t
 	RUN_FLAG="-run Long"; \
 	if [ -n "$(TESTCASE)" ]; then RUN_FLAG="-run ^$(TESTCASE)$$"; fi; \
 	REPORT_FILE="$(TEST_REPORTS_DIR)/live-long.xml"; \
-	cd tests/live && LIVE_LONG=1 GOWORK=off gotestsum \
+	cd tests/live && LIVE_LONG=1 gotestsum \
 		--format=$(GOTESTSUM_FORMAT) \
 		--junitfile=../../$$REPORT_FILE \
 		-- -v -timeout 90m $$RUN_FLAG; \
@@ -2080,7 +2074,7 @@ test-realtime: install-gotestsum ## Run the Realtime API e2e tests against a run
 	RUN_FLAG=""; \
 	if [ -n "$(TESTCASE)" ]; then RUN_FLAG="-run ^$(TESTCASE)$$"; elif [ -n "$(PATTERN)" ]; then RUN_FLAG="-run .*$(PATTERN).*"; fi; \
 	REPORT_FILE="$(TEST_REPORTS_DIR)/realtime.xml"; \
-	cd tests/realtime && REALTIME_REQUIRE_GATEWAY=1 GOWORK=off gotestsum \
+	cd tests/realtime && REALTIME_REQUIRE_GATEWAY=1 gotestsum \
 		--format=$(GOTESTSUM_FORMAT) \
 		--junitfile=../../$$REPORT_FILE \
 		-- -v -count 1 -timeout 600s $$RUN_FLAG; \
@@ -2096,7 +2090,7 @@ test-realtime-long: install-gotestsum ## Run the long Gemini and Vertex Live ses
 	RUN_FLAG="-run Long"; \
 	if [ -n "$(TESTCASE)" ]; then RUN_FLAG="-run ^$(TESTCASE)$$"; fi; \
 	REPORT_FILE="$(TEST_REPORTS_DIR)/realtime-long.xml"; \
-	cd tests/realtime && REALTIME_REQUIRE_GATEWAY=1 REALTIME_UPSTREAM=real REALTIME_LONG=1 GOWORK=off gotestsum \
+	cd tests/realtime && REALTIME_REQUIRE_GATEWAY=1 REALTIME_UPSTREAM=real REALTIME_LONG=1 gotestsum \
 		--format=$(GOTESTSUM_FORMAT) \
 		--junitfile=../../$$REPORT_FILE \
 		-- -v -count 1 -timeout 40m $$RUN_FLAG; \
@@ -2149,7 +2143,7 @@ run-cli-harness-test: ## Run the Claude Code + Codex + OpenCode E2E harness (non
 		BIFROST_E2E_CLIS_QUIET="$(QUIET)" \
 		BIFROST_E2E_CLIS_MIRROR="$(MIRROR)" \
 		MODEL="$(MODEL)" \
-		GOWORK=off go test \
+		go test \
 			-count=1 \
 			-timeout=$${TIMEOUT:-$(if $(TIMEOUT),$(TIMEOUT),60m)} \
 			-parallel="$$PARALLEL_VAL" \
@@ -2159,7 +2153,7 @@ run-cli-harness-test: ## Run the Claude Code + Codex + OpenCode E2E harness (non
 
 cli-harness-report: ## Regenerate tests/e2e/clis/reports/index.html from existing reports/*.json, without running any tests (free, instant). Usage: make cli-harness-report
 	@$(ECHO) "$(GREEN)Rendering CLI harness report from existing reports/*.json...$(NC)"
-	@cd tests/e2e/clis && GOWORK=off go test -run "^TestRenderReport$$" -v ./...
+	@cd tests/e2e/clis && go test -run "^TestRenderReport$$" -v ./...
 
 # The harness runner unit tests are plain node scripts with no framework (the
 # tests/e2e/api dir configures no test runner), so nothing discovers them
@@ -2672,7 +2666,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		MCP_FIXTURE_BIN="$(CURDIR)/examples/mcps/remote-test-server/bin/remote-test-server"; \
 		if [ ! -x "$$MCP_FIXTURE_BIN" ] || [ examples/mcps/remote-test-server/main.go -nt "$$MCP_FIXTURE_BIN" ]; then \
 			say "$(CYAN)Building MCP test server (examples/mcps/remote-test-server)...$(NC)"; \
-			(cd examples/mcps/remote-test-server && GOWORK=off go build -o bin/remote-test-server .) || { \
+			(cd examples/mcps/remote-test-server && go build -o bin/remote-test-server .) || { \
 				say "$(RED)Could not build the MCP test server (examples/mcps/remote-test-server); not running the harness against a stale or missing fixture$(NC)"; \
 				exit 1; \
 			}; \

@@ -103,9 +103,9 @@ echo -e "${GREEN}✅ Prerequisites validated${NC}"
 echo ""
 echo -e "${CYAN}📦 Step 2: Building Bifrost...${NC}"
 
-# Use make to build with LOCAL=1 to use the workspace (go.work)
-# This ensures we test the local governance plugin code, not the published version
-if ! make build LOCAL=1; then
+# `make build` always uses the workspace (go.work), so this tests the local governance
+# plugin code, not the published version.
+if ! make build; then
   echo -e "${RED}❌ Failed to build Bifrost${NC}"
   exit 1
 fi
