@@ -34,19 +34,21 @@ Tasks 1–10 are implemented and verified locally; every step box is checked. Lo
 
 `ci.yml` is green end to end (runs 44066288198 and 44081705386, ~17m). The first attempt failed on 44 `framework/vectorstore` tests and on `plugins/semanticcache`, because those suites gate their integration paths on `testing.Short()`, not on `CI`; the light tier now passes `-short` in `ci.yml` and in `verify`, and the Redis config/TLS-shape tests assert on the client builder (`RedisConfig.newClient()`) instead of a store that pings. `full-tests.yml` still runs without `-short`.
 
-### `v0.0.1-spike` rehearsal — run 44081709015
+### `v0.0.1-spike` rehearsal — COMPLETE (run 44118528396, all jobs green)
 
-Published: GitHub Release `marga-runtime v0.0.1-spike`, `prerelease=true`, exactly 10 assets (5 binaries + 5 checksums). The linux/amd64 asset was downloaded back, `sha256sum -c` passed, `file` reports a statically linked stripped ELF, `ldd` reports "not a dynamic executable", and it cold-boots with `/health` 200, HTML on `/`, and `v0.0.1-spike` in the banner.
+Published: GitHub Release `marga-runtime v0.0.1-spike`, `prerelease=true`, exactly 10 assets (5 binaries + 5 checksums). Verified after download: `sha256sum -c` passes, the linux/amd64 binary is a statically linked stripped ELF (`ldd`: "not a dynamic executable") that cold-boots with `/health` 200, HTML on `/`, and `v0.0.1-spike` in the banner.
 
-Green: `validate tag`, `unit tests`, all five `binary *` legs, `GitHub release`.
+Images: both `image` legs pushed, and `image manifest` combined them into a manifest list at `ghcr.io/ilmannafi11/marga-runtime:v0.0.1-spike` (digest `sha256:29ecac24…`, linux/amd64 + linux/arm64) and the same list on `docker.io/ilmannafi/marga-runtime:v0.0.1-spike`. Pulled anonymously and booted: `/health` 200, HTML on `/`, tag in the banner. `latest` exists on neither registry — correct for a prerelease.
 
-Red, blocking a stable tag: both `image` legs fail at **Log in to Docker Hub** — `unauthorized: incorrect username or password`. The GHCR login in the same job succeeds (`Login Succeeded!`), and the failure happens before buildx runs, so no image was pushed anywhere and `image manifest` was skipped. `vars.DOCKERHUB_USERNAME` is set (`ilmannafi`); the `DOCKERHUB_TOKEN` secret is wrong or lacks write scope.
+Getting there surfaced three more release-only defects, each pinned by a new test:
 
-### Still operator-only
+1. `docker buildx imagetools create` has no `--amend` flag (sources are positional); every release would have died with `unknown flag: --amend` after both images were already pushed. The argument list moved into `combine-image-manifest.sh` with `combine-image-manifest.test.sh` (red on the old inline form).
+2. `image-manifest` had no Checkout step — it never needed the repo while the arguments were inline, then failed with exit 127 calling the helper script.
+3. `image-manifest` declared no permissions, so the GHCR manifest PUT was `403 denied: installation not allowed to Write organization package`; it now declares `packages: write` like the image job.
 
-1. Rotate `DOCKERHUB_TOKEN` (Docker Hub → Account settings → Personal access tokens, read/write) and set it as the repository secret.
-2. Flip the GHCR package to public once, after the first successful push.
-3. Re-run `v0.0.1-spike` (delete and re-push the tag) to prove the image and manifest steps, then move to a real version.
+The Docker Hub failure from the first rehearsal was the user-side `DOCKERHUB_TOKEN` secret, rotated before the rerun; GHCR login had always succeeded.
+
+Remaining operator-only: none for this spike. The package visibility check via API is 403 for this PAT, but an anonymous `docker pull` of the GHCR image succeeds, which is the user-visible contract.
 
 ## Review Focus
 
