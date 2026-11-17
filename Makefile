@@ -350,7 +350,7 @@ dev-pulse: install-ui install-pulse setup-workspace $(if $(DEBUG),install-delve)
 build-ui: install-ui ## Build ui
 	@$(ECHO) "$(GREEN)Building ui...$(NC)"
 	@rm -rf ui/.next
-	@$(USE_NODE); cd ui && npm run build && npm run copy-build
+	@$(USE_NODE); cd ui && NODE_OPTIONS=--max-old-space-size=4096 npm run build && npm run copy-build
 
 build: build-ui ## Build bifrost-http binary (BUILD_TAGS adds Go build tags; the MCP harness passes harness)
 	@$(REQUIRE_WORKSPACE)

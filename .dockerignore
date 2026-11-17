@@ -15,6 +15,10 @@ build/
 out/
 *.tsbuildinfo
 
+# Local UI build output; the image builds the UI in its own stage
+ui/out/
+transports/bifrost-http/ui/
+
 # Logs
 logs/
 *.log
