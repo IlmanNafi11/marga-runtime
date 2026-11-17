@@ -50,6 +50,16 @@ The Docker Hub failure from the first rehearsal was the user-side `DOCKERHUB_TOK
 
 Remaining operator-only: none for this spike. The package visibility check via API is 403 for this PAT, but an anonymous `docker pull` of the GHCR image succeeds, which is the user-visible contract.
 
+### `v0.0.1` first stable release — run 44166604416, all jobs green
+
+Tag `v0.0.1` on `3e99f88f7b`. Every job succeeded on the first attempt, so the three release-only defects above were the whole gap between the spike and a stable tag.
+
+Published: GitHub Release `marga-runtime v0.0.1`, `prerelease=false`, 10 assets. `sha256sum -c` passes; the linux/amd64 asset is a statically linked stripped ELF that cold-boots with `/health` 200, HTML on `/`, and `v0.0.1` in the banner.
+
+Images: `ghcr.io/ilmannafi11/marga-runtime` and `docker.io/ilmannafi/marga-runtime` each carry `v0.0.1`, `0.0.1`, `amd64`, `arm64` and `latest`, with `latest` and `v0.0.1` resolving to the same digest (`sha256:4bcecdee…`). Both pull anonymously and boot with the tag in the banner.
+
+Only the changelog section of the release body is empty, because `generate_release_notes` diffs against the previous tag and there is no earlier stable tag to diff from; the link points at `v0.0.1-spike...v0.0.1`.
+
 ## Review Focus
 
 1. **A build that resolves published `maximhq` modules instead of the local tree** — a build that goes green while compiling someone else's code. Pinned by Task 1's guard test.
