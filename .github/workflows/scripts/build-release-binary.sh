@@ -48,15 +48,44 @@ artifact="$outdir/$name"
 
 ldflags="-w -s -X main.Version=v${version}"
 tags=""
-if [ "$goos" = "linux" ]; then
-  ldflags="$ldflags -extldflags '-static' -buildid="
-  tags="-tags sqlite_static"
-fi
+
+# CGO means a C cross compiler per target. install-cross-compilers.sh provides
+# all five; leaving CC unset let Go fall back to the runner's native gcc, which
+# aborts on `windows.h: No such file or directory` for windows and links the
+# host ABI for darwin.
+cc=""
+cxx=""
+case "$goos/$goarch" in
+  linux/amd64)
+    ldflags="$ldflags -extldflags '-static' -buildid="
+    tags="-tags sqlite_static"
+    cc=x86_64-linux-musl-gcc
+    cxx=x86_64-linux-musl-g++
+    ;;
+  linux/arm64)
+    ldflags="$ldflags -extldflags '-static' -buildid="
+    tags="-tags sqlite_static"
+    cc=aarch64-linux-musl-gcc
+    cxx=aarch64-linux-musl-g++
+    ;;
+  darwin/amd64)
+    cc=o64-clang
+    cxx=o64-clang++
+    ;;
+  darwin/arm64)
+    cc=oa64-clang
+    cxx=oa64-clang++
+    ;;
+  windows/amd64)
+    cc=x86_64-w64-mingw32-gcc
+    cxx=x86_64-w64-mingw32-g++
+    ;;
+esac
 
 (
   cd "$root/transports/bifrost-http"
   # shellcheck disable=SC2086 # tags and ldflags are intentionally word-split
-  CGO_ENABLED=1 GOOS="$goos" GOARCH="$goarch" \
+  CGO_ENABLED=1 GOOS="$goos" GOARCH="$goarch" CC="$cc" CXX="$cxx" \
     go build -trimpath $tags -ldflags "$ldflags" -o "$artifact" .
 )
 

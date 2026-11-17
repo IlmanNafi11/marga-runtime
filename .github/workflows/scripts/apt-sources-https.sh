@@ -50,10 +50,18 @@ tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
 
 if [[ -f "$mirrors" ]]; then
-  sed -E '/^[[:space:]]*http:\/\/azure\.archive\.ubuntu\.com([\/[:space:]]|$)/d' "$mirrors" > "$tmp"
+  # Runner images pick a regional Azure mirror by name, and it was not always
+  # us-east-2: an EC2 runner's list starts with
+  # http://us-east-2.ec2.archive.ubuntu.com/ubuntu/ (priority:1) instead of
+  # http://azure.archive.ubuntu.com/ubuntu/. Both are AWS-local mirrors with 443
+  # closed, so they are deleted rather than rewritten: the https
+  # archive.ubuntu.com line further down the list already covers the same
+  # pockets. Matching only the bare host left the EC2 line in place and the
+  # leftover check below failed the cross-compiler install.
+  sed -E '/^[[:space:]]*http:\/\/(([a-z0-9-]+\.)?ec2\.|azure\.)archive\.ubuntu\.com([\/[:space:]]|$)/d' "$mirrors" > "$tmp"
   if ! cmp -s "$tmp" "$mirrors"; then
     ${APT_SUDO:+$APT_SUDO} cp "$tmp" "$mirrors"
-    echo "apt-sources-https: dropped the Azure http mirror from $mirrors"
+    echo "apt-sources-https: dropped the EC2-local http mirror from $mirrors"
   fi
 fi
 for f in "${files[@]}"; do

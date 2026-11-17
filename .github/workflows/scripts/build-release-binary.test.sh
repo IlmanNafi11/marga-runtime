@@ -32,7 +32,7 @@ printf '<!doctype html>\n' > "$WORK/repo/transports/bifrost-http/ui/index.html"
 cat > "$WORK/bin/go" <<'FAKE'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$FAKE_ARGS"
-printf 'CGO_ENABLED=%s\nGOOS=%s\nGOARCH=%s\n' "${CGO_ENABLED:-}" "${GOOS:-}" "${GOARCH:-}" > "$FAKE_ENV"
+printf 'CGO_ENABLED=%s\nGOOS=%s\nGOARCH=%s\nCC=%s\nCXX=%s\n' "${CGO_ENABLED:-}" "${GOOS:-}" "${GOARCH:-}" "${CC:-}" "${CXX:-}" > "$FAKE_ENV"
 output=""
 previous=""
 for arg in "$@"; do
@@ -76,7 +76,7 @@ artifact="$WORK/out-linux/marga-runtime-linux-amd64"
 if ! grep -Eqx '[0-9a-f]{64}  marga-runtime-linux-amd64' "$artifact.sha256"; then
   fail_msg "linux/amd64 checksum is not a BSD line with a bare filename: $(cat "$artifact.sha256" 2>/dev/null)"
 fi
-if [ "$(tr '\n' ' ' < "$WORK/e1")" != "CGO_ENABLED=1 GOOS=linux GOARCH=amd64 " ]; then
+if [ "$(tr '\n' ' ' < "$WORK/e1")" != "CGO_ENABLED=1 GOOS=linux GOARCH=amd64 CC=x86_64-linux-musl-gcc CXX=x86_64-linux-musl-g++ " ]; then
   fail_msg "linux/amd64 env was '$(tr '\n' ' ' < "$WORK/e1")'"
 fi
 args1="$(tr '\n' ' ' < "$WORK/a1")"
@@ -111,6 +111,12 @@ for banned in sqlite_static buildid; do
 done
 if [ "$(grep '^CGO_ENABLED=' "$WORK/e2")" != "CGO_ENABLED=1" ]; then
   fail_msg "windows/amd64 built without CGO: $(cat "$WORK/e2")"
+fi
+# The runner's native gcc cannot build runtime/cgo for windows -- it fails on
+# `windows.h: No such file or directory` -- so the mingw cross compiler must be
+# selected here, exactly as the darwin branches select o64/oa64-clang.
+if ! grep -qx 'CC=x86_64-w64-mingw32-gcc' "$WORK/e2"; then
+  fail_msg "windows/amd64 built without the mingw cross compiler: $(cat "$WORK/e2")"
 fi
 
 # 3. darwin/arm64: plain artifact, no static sqlite.

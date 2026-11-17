@@ -79,6 +79,13 @@ grep -qx "deb https://security.ubuntu.com/ubuntu noble-security main" "$WORK/apt
 ok "security.ubuntu.com stays on its host over https"
 
 reset
+printf 'http://us-east-2.ec2.archive.ubuntu.com/ubuntu/\tpriority:1\nhttps://archive.ubuntu.com/ubuntu/\tpriority:2\n' > "$WORK/apt/apt-mirrors.txt"
+run || fail "regional ec2 mirror errored"
+! grep -q "ec2.archive" "$WORK/apt/apt-mirrors.txt" || fail "regional ec2 http mirror still listed"
+grep -q "^https://archive.ubuntu.com/ubuntu/" "$WORK/apt/apt-mirrors.txt" || fail "archive mirror dropped"
+ok "a regional <region>.ec2.archive.ubuntu.com http mirror is dropped, not rewritten"
+
+reset
 printf 'deb http://us.archive.ubuntu.com/ubuntu noble main\n' > "$WORK/apt/sources.list"
 if run; then fail "accepted an unmapped http ubuntu mirror"; fi
 grep -q "us.archive.ubuntu.com" "$WORK/out" || fail "error does not name the leftover source"
