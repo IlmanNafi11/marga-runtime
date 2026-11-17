@@ -270,18 +270,20 @@ func readTestCACert(t *testing.T) string {
 	return string(data)
 }
 
+// The TLS shape tests assert how RedisConfig becomes a client — DB index, cluster
+// mode, TLS config — so they build the client directly. newRedisStore adds a
+// Ping, which is a different concern and needs a live server; these cases must
+// run in the light tier, where no Redis container is up.
 func TestNewRedisStore_ConfiguresStandaloneTLSClient(t *testing.T) {
-	logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
-
-	store, err := newRedisStore(context.Background(), RedisConfig{
+	built, err := RedisConfig{
 		Addr:               schemas.NewSecretVar("localhost:6380"),
 		DB:                 schemas.NewSecretVar("2"),
 		UseTLS:             schemas.NewSecretVar("true"),
 		InsecureSkipVerify: schemas.NewSecretVar("true"),
-	}, logger)
+	}.newClient()
 	require.NoError(t, err)
 
-	client, ok := store.client.(*redis.Client)
+	client, ok := built.(*redis.Client)
 	require.True(t, ok, "expected standalone redis client")
 	require.Equal(t, 2, client.Options().DB)
 	require.NotNil(t, client.Options().TLSConfig)
@@ -289,17 +291,15 @@ func TestNewRedisStore_ConfiguresStandaloneTLSClient(t *testing.T) {
 }
 
 func TestNewRedisStore_ConfiguresStandaloneTLSClientWithCACert(t *testing.T) {
-	logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
-
-	store, err := newRedisStore(context.Background(), RedisConfig{
+	built, err := RedisConfig{
 		Addr:      schemas.NewSecretVar("localhost:6380"),
 		DB:        schemas.NewSecretVar("2"),
 		UseTLS:    schemas.NewSecretVar("true"),
 		CACertPEM: schemas.NewSecretVar(readTestCACert(t)),
-	}, logger)
+	}.newClient()
 	require.NoError(t, err)
 
-	client, ok := store.client.(*redis.Client)
+	client, ok := built.(*redis.Client)
 	require.True(t, ok, "expected standalone redis client")
 	require.NotNil(t, client.Options().TLSConfig)
 	require.NotNil(t, client.Options().TLSConfig.RootCAs)
@@ -307,17 +307,15 @@ func TestNewRedisStore_ConfiguresStandaloneTLSClientWithCACert(t *testing.T) {
 }
 
 func TestNewRedisStore_ConfiguresClusterTLSClient(t *testing.T) {
-	logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
-
-	store, err := newRedisStore(context.Background(), RedisConfig{
+	built, err := RedisConfig{
 		Addr:               schemas.NewSecretVar("localhost:7100"),
 		UseTLS:             schemas.NewSecretVar("true"),
 		InsecureSkipVerify: schemas.NewSecretVar("true"),
 		ClusterMode:        schemas.NewSecretVar("true"),
-	}, logger)
+	}.newClient()
 	require.NoError(t, err)
 
-	client, ok := store.client.(*redis.ClusterClient)
+	client, ok := built.(*redis.ClusterClient)
 	require.True(t, ok, "expected redis cluster client")
 	require.Equal(t, []string{"localhost:7100"}, client.Options().Addrs)
 	require.NotNil(t, client.Options().TLSConfig)
@@ -325,17 +323,15 @@ func TestNewRedisStore_ConfiguresClusterTLSClient(t *testing.T) {
 }
 
 func TestNewRedisStore_ConfiguresClusterTLSClientWithCACert(t *testing.T) {
-	logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
-
-	store, err := newRedisStore(context.Background(), RedisConfig{
+	built, err := RedisConfig{
 		Addr:        schemas.NewSecretVar("localhost:7100"),
 		UseTLS:      schemas.NewSecretVar("true"),
 		CACertPEM:   schemas.NewSecretVar(readTestCACert(t)),
 		ClusterMode: schemas.NewSecretVar("true"),
-	}, logger)
+	}.newClient()
 	require.NoError(t, err)
 
-	client, ok := store.client.(*redis.ClusterClient)
+	client, ok := built.(*redis.ClusterClient)
 	require.True(t, ok, "expected redis cluster client")
 	require.NotNil(t, client.Options().TLSConfig)
 	require.NotNil(t, client.Options().TLSConfig.RootCAs)
