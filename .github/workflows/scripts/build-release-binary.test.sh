@@ -127,6 +127,17 @@ fi
 case "$(tr '\n' ' ' < "$WORK/a3")" in
   *sqlite_static*) fail_msg "darwin/arm64 carried sqlite_static" ;;
 esac
+# 3b. A relative outdir is resolved once, from the repo root. Resolving it
+# again after `cd transports/bifrost-http` made `go build -o` write
+# transports/bifrost-http/dist-spike/... while the checksum and the existence
+# check looked for <repo>/dist-spike/..., so the spike job reported
+# "go build produced no dist-spike/..." after a build that had succeeded.
+if run_build "$WORK/repo" dist-spike darwin arm64 "$WORK/a3b" "$WORK/e3b" "$WORK/err3b"; then :; else
+  fail_msg "relative outdir exited non-zero: $(cat "$WORK/err3b")"
+fi
+[ -f "$WORK/repo/dist-spike/marga-runtime-darwin-arm64" ] || fail_msg "relative outdir artifact not under the repo root"
+[ -f "$WORK/repo/dist-spike/marga-runtime-darwin-arm64.sha256" ] || fail_msg "relative outdir checksum missing"
+[ -d "$WORK/repo/transports/bifrost-http/dist-spike" ] && fail_msg "relative outdir escaped into transports/bifrost-http"
 
 # 4. A platform outside the matrix is refused before any build starts.
 set +e

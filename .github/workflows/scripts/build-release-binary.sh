@@ -30,6 +30,15 @@ if [ -z "$version" ]; then
   exit 2
 fi
 
+# Resolve a relative outdir against the caller's working directory once, before
+# the build's own `cd`. `go build -o` runs inside transports/bifrost-http, so
+# leaving it relative wrote the artifact one directory down and every check
+# afterwards reported "go build produced no dist-spike/...".
+case "$outdir" in
+  /*) ;;
+  *) outdir="$PWD/$outdir" ;;
+esac
+
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 ui_dir="$root/transports/bifrost-http/ui"
 
