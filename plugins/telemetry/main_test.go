@@ -1465,6 +1465,11 @@ func TestModelProbeMovesNoProviderSeries(t *testing.T) {
 	if _, _, err := p.PostLLMHook(ordinaryCtx, overheadResponse(), nil); err != nil {
 		t.Fatalf("PostLLMHook: %v", err)
 	}
+
+	// PostLLMHook records on a goroutine; settle waits for the retries observation, which
+	// this same goroutine writes after UpstreamRequestsTotal.Inc(). Without it the control
+	// assertion below raced the goroutine and failed roughly one run in ten.
+	settle(t, p, 1)
 	if got := testutil.CollectAndCount(p.UpstreamRequestsTotal); got == 0 {
 		t.Fatalf("bifrost_upstream_requests_total recorded nothing for an ordinary request")
 	}
