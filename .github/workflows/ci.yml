@@ -29,9 +29,15 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          # There is no root go.mod; the workspace files declare the toolchain.
-          go-version-file: go.work
-          cache-dependency-path: go.work.sum
+          # go.work is gitignored, so it does not exist before checkout has run
+          # the workspace step below; read the floor from a committed module.
+          go-version-file: core/go.mod
+          cache-dependency-path: |
+            core/go.sum
+            framework/go.sum
+            transports/go.sum
+            cli/go.sum
+            plugins/*/go.sum
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
