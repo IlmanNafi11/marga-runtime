@@ -1,0 +1,91 @@
+name: CI
+
+# Everything a pull request needs and nothing it does not: no service
+# containers, no secrets, no registry. Service-backed suites live in
+# full-tests.yml and are dispatched on demand.
+on:
+  pull_request:
+  push:
+    branches: [dev]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build, vet, unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          # There is no root go.mod; the workspace files declare the toolchain.
+          go-version-file: go.work
+          cache-dependency-path: go.work.sum
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Set up the Go workspace
+        run: bash .github/workflows/scripts/setup-go-workspace.sh
+
+      - name: Build UI
+        run: make build-ui
+
+      - name: Build binary
+        run: make build
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: bifrost-http-linux-amd64
+          path: tmp/bifrost-http
+          if-no-files-found: error
+
+      - name: Vet
+        run: |
+          modules=(core framework transports)
+          for dir in plugins/*/; do
+            [ -f "$dir/go.mod" ] && modules+=("${dir%/}")
+          done
+          for module in "${modules[@]}"; do
+            echo "::group::go vet $module"
+            ( cd "$module" && go vet ./... )
+            echo "::endgroup::"
+          done
+
+      - name: Core unit tests
+        run: bash .github/workflows/scripts/run-core-unit-tests.sh core
+
+      - name: Framework, transport and plugin unit tests
+        run: |
+          # CI is unset: the service-backed packages fail rather than skip when
+          # CI is set and their backing service is absent. They are covered by
+          # full-tests.yml.
+          modules=(framework transports)
+          for dir in plugins/*/; do
+            [ -f "$dir/go.mod" ] && modules+=("${dir%/}")
+          done
+          for module in "${modules[@]}"; do
+            echo "::group::go test $module"
+            ( cd "$module" && env -u CI go test -timeout 20m ./... )
+            echo "::endgroup::"
+          done
+
+      - name: UI i18n check
+        working-directory: ui
+        run: npm run i18n:check
