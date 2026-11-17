@@ -140,7 +140,7 @@ Messages path is unaffected.
 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION`. Without them the
 provider is unconfigured and `TestCLIs` **skips every bedrock cell silently,
 with a green suite** - which is exactly how the defect shipped unnoticed. The
-`cells produced: 0` guard in `test-cli-harness.sh` is what catches that: an
+`cells produced: 0` guard in `make run-cli-harness-test` is what catches that: an
 empty reports subdirectory fails the suite rather than passing it.
 
 **Permission bypass is per-CLI, not universal.** `--dangerously-skip-permissions`
@@ -277,7 +277,7 @@ rate so far, and is omitted until the first cell finishes.
 
 **The table goes to stderr; everything else goes to stdout.** That split is what
 lets CI redirect the verbose output to a log file and keep only the table on the
-console (see `.github/workflows/scripts/test-cli-harness.sh`). Locally the two
+console. Locally the two
 are interleaved, which is fine on a terminal.
 
 ## CLI versions in CI
@@ -327,7 +327,7 @@ archived under `tmp/cli-harness-attempts/<cli>/attempt-N/` - without it a suite
 that goes green on retry leaves no record of what failed first, which is the
 evidence for telling a flake from a degradation.
 
-The version literals in `.github/workflows/scripts/test-cli-harness.sh` are now
+The version literals in `tests/e2e/clis` are now
 only a local-run default and the fallback used if npm is unreachable (in which
 case the matrix degrades to a single `pinned` leg and logs a warning, rather
 than collapsing to an empty matrix - an empty one would skip the job, and the

@@ -46,7 +46,7 @@ make test-realtime REALTIME_UPSTREAM=fake BIFROST_BASE_URL=http://localhost:8187
 # or the default selection, building the gateway from this checkout and starting it: fake | real | long
 # (the default selection is the Gemini, Vertex, Soniox and ElevenLabs tests, REALTIME_PATTERN picks others, and long runs only TestLiveLong_*)
 # (it first deletes the *.db files in the profile's data directory, which loses a database kept from a manual run)
-./.github/workflows/scripts/test-realtime.sh fake
+make test-realtime REALTIME_UPSTREAM=fake
 ```
 
 Only the tests that start with `requireUpstream` run in fake mode; every `requireGateway` test needs a real provider and skips. `requireFake` marks a scenario only a fake can script, such as a provider that drops the connection.

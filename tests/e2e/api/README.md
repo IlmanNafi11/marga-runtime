@@ -855,7 +855,7 @@ Run locally (from this directory):
 ./runners/individual/run-newman-model-catalog-wiring-tests.sh --binary /path/to/bifrost-http  # boots a clean one (--port, default 8095)
 ```
 
-CI runs it with `--binary` from `.github/workflows/scripts/test-api-integrations.sh`.
+`make test-integrations-py` runs it with `--binary`.
 
 Requirements:
 
@@ -900,7 +900,7 @@ judged once, so a route that only shows up on a retry fails.
 Some scenarios create the global standard providers (openai, anthropic, gemini,
 azure, bedrock, vertex), so run it against a server nothing else has configured. `--binary` boots
 one (no providers, sqlite stores in a throwaway app dir) and stops it afterwards;
-CI runs it this way from `.github/workflows/scripts/test-api-integrations.sh`.
+`make test-integrations-ts` runs it this way.
 
 ```bash
 ./runners/individual/run-newman-routing-wiring-tests.sh --binary /path/to/bifrost-http  # --port, default 8094
@@ -977,7 +977,7 @@ question case is retried once before it fails. Request validation and SSE framin
 make no model call and never retry.
 
 It needs Postgres and Weaviate (both in `tests/docker-compose.yml`) and a built
-`bifrost-http` binary. CI runs it from `.github/workflows/scripts/test-api-integrations.sh`.
+`bifrost-http` binary. `make test-integrations` runs it.
 
 ```bash
 make run-warp-test                                  # builds tmp/bifrost-http first
@@ -1027,7 +1027,7 @@ retired every `/v1/completions` model) and Bedrock. Every key is `env.<NAME>`, r
 from the environment of the server the runner boots; the runner refuses to start
 when one is missing. It needs Redis Stack and Weaviate (both in
 `tests/docker-compose.yml`) and a built `bifrost-http` binary. CI runs it from
-`.github/workflows/scripts/test-api-integrations.sh`.
+`make test-integrations-py`.
 
 Run locally (from this directory):
 

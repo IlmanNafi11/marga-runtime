@@ -114,30 +114,40 @@ RUN npm run build-enterprise
 
 # --- Go Build Stage: Compile the Go binary ---
 FROM golang:1.27.3-alpine3.24 AS builder
-WORKDIR /app
+WORKDIR /build
 
 # Install dependencies including gcc for CGO and sqlite
 RUN apk add --no-cache gcc musl-dev sqlite-dev
 
 # Set environment for CGO-enabled build (required for go-sqlite3 and plugins)
-ENV CGO_ENABLED=1 GOOS=linux
+ENV CGO_ENABLED=1 GOOS=linux GOTOOLCHAIN=auto
 
-COPY transports/go.mod transports/go.sum ./
-RUN go mod download
+# Copy every workspace module; nothing here resolves a published github.com/maximhq module
+COPY core/ ./core/
+COPY framework/ ./framework/
+COPY plugins/ ./plugins/
+COPY transports/ ./transports/
 
-# Copy source code and dependencies
-COPY transports/ ./
+RUN go work init && \
+    go work use ./core && \
+    go work use ./framework && \
+    go work use ./transports && \
+    for plugin_dir in ./plugins/*/; do \
+      if [ -f "$plugin_dir/go.mod" ]; then go work use "$plugin_dir" || exit 1; fi; \
+    done
 
-COPY --from=ui-builder /app/out ./bifrost-http/ui
+COPY --from=ui-builder /app/out ./transports/bifrost-http/ui
 
 # Build the binary with CGO enabled for DYNAMIC LINKING
-ENV GOWORK=off
 ARG VERSION=unknown
-RUN go build \
+RUN cd /build/transports && go build \
     -ldflags="-w -s -X main.Version=v${VERSION}" \
     -a -trimpath \
     -o /app/main \
     ./bifrost-http
+
+# The entrypoint ships with the transports module
+RUN cp transports/docker-entrypoint.sh /app/docker-entrypoint.sh
 
 # Verify build succeeded
 RUN test -f /app/main || (echo "Build failed" && exit 1)
@@ -201,8 +211,109 @@ CMD ["/app/main"]
 **Build and run:**
 
 ```bash
-# Build the image
-docker build -f transports/Dockerfile -t bifrost:dynamic-alpine .
+# Build the image from the Dockerfile in the Accordion above
+docker build -f - -t bifrost:dynamic-alpine . <<'EOF'
+FROM node:25-alpine3.23 AS ui-builder
+WORKDIR /app
+
+# Copy UI package files and install dependencies
+COPY ui/package*.json ./
+RUN npm ci
+
+# Copy UI source code
+COPY ui/ ./
+
+# Build UI (skip the copy-build step)
+RUN npm run build-enterprise
+
+# --- Go Build Stage: Compile the Go binary ---
+FROM golang:1.27.3-alpine3.24 AS builder
+WORKDIR /build
+
+# Install dependencies including gcc for CGO and sqlite
+RUN apk add --no-cache gcc musl-dev sqlite-dev
+
+# Set environment for CGO-enabled build (required for go-sqlite3 and plugins)
+ENV CGO_ENABLED=1 GOOS=linux GOTOOLCHAIN=auto
+
+# Copy every workspace module; nothing here resolves a published github.com/maximhq module
+COPY core/ ./core/
+COPY framework/ ./framework/
+COPY plugins/ ./plugins/
+COPY transports/ ./transports/
+
+RUN go work init && \
+    go work use ./core && \
+    go work use ./framework && \
+    go work use ./transports && \
+    for plugin_dir in ./plugins/*/; do \
+      if [ -f "$plugin_dir/go.mod" ]; then go work use "$plugin_dir" || exit 1; fi; \
+    done
+
+COPY --from=ui-builder /app/out ./transports/bifrost-http/ui
+
+# Build the binary with CGO enabled for DYNAMIC LINKING
+ARG VERSION=unknown
+RUN cd /build/transports && go build \
+    -ldflags="-w -s -X main.Version=v${VERSION}" \
+    -a -trimpath \
+    -o /app/main \
+    ./bifrost-http
+
+# The entrypoint ships with the transports module
+RUN cp transports/docker-entrypoint.sh /app/docker-entrypoint.sh
+
+# Verify build succeeded
+RUN test -f /app/main || (echo "Build failed" && exit 1)
+
+# --- Runtime Stage: Minimal runtime image ---
+FROM alpine:3.23
+WORKDIR /app
+
+# Install runtime dependencies for CGO-enabled dynamic binary
+# musl: C standard library (required for CGO binaries)
+# libgcc: GCC runtime library
+# ca-certificates: For HTTPS connections
+# wget: For healthcheck
+RUN apk add --no-cache musl libgcc ca-certificates wget
+
+# Create data directory and set up user
+COPY --from=builder /app/main .
+COPY --from=builder /app/docker-entrypoint.sh .
+
+# Getting arguments
+ARG ARG_APP_PORT=8080
+ARG ARG_APP_HOST=0.0.0.0
+ARG ARG_LOG_LEVEL=info
+ARG ARG_LOG_STYLE=json
+ARG ARG_APP_DIR=/app/data
+
+# Environment variables with defaults (can be overridden at runtime)
+ENV APP_PORT=$ARG_APP_PORT \
+    APP_HOST=$ARG_APP_HOST \
+    LOG_LEVEL=$ARG_LOG_LEVEL \
+    LOG_STYLE=$ARG_LOG_STYLE \
+    APP_DIR=$ARG_APP_DIR
+
+RUN mkdir -p "$APP_DIR/logs" && \
+    adduser -D -s /bin/sh appuser && \
+    chown -R appuser:appuser /app && \
+    { [ "$APP_DIR" = "/app" ] || [ "${APP_DIR#/app/}" != "$APP_DIR" ] || chown -R appuser:appuser "$APP_DIR"; } && \
+    chmod +x /app/docker-entrypoint.sh
+USER appuser
+
+# Declare volume for data persistence
+VOLUME ["${APP_DIR}"]
+EXPOSE $APP_PORT
+
+# Health check for container status monitoring
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:${APP_PORT}/metrics || exit 1
+
+# Use entrypoint script that handles volume permissions and argument processing
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["/app/main"]
+EOF
 
 # Run the container
 docker run -p 8080:8080 -v ./plugins:/app/data/plugins bifrost:dynamic-alpine
@@ -231,7 +342,7 @@ RUN npm run build-enterprise
 
 # --- Go Build Stage: Compile the Go binary ---
 FROM golang:1.27.3-bookworm AS builder
-WORKDIR /app
+WORKDIR /build
 
 # Install dependencies including gcc for CGO and sqlite
 RUN apt-get update && apt-get install -y \
@@ -241,20 +352,27 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Set environment for CGO-enabled build (required for go-sqlite3 and plugins)
-ENV CGO_ENABLED=1 GOOS=linux
+ENV CGO_ENABLED=1 GOOS=linux GOTOOLCHAIN=auto
 
-COPY transports/go.mod transports/go.sum ./
-RUN go mod download
+# Copy every workspace module; nothing here resolves a published github.com/maximhq module
+COPY core/ ./core/
+COPY framework/ ./framework/
+COPY plugins/ ./plugins/
+COPY transports/ ./transports/
 
-# Copy source code and dependencies
-COPY transports/ ./
+RUN go work init && \
+    go work use ./core && \
+    go work use ./framework && \
+    go work use ./transports && \
+    for plugin_dir in ./plugins/*/; do \
+      if [ -f "$plugin_dir/go.mod" ]; then go work use "$plugin_dir" || exit 1; fi; \
+    done
 
-COPY --from=ui-builder /app/out ./bifrost-http/ui
+COPY --from=ui-builder /app/out ./transports/bifrost-http/ui
 
 # Build the binary with CGO enabled for DYNAMIC LINKING
-ENV GOWORK=off
 ARG VERSION=unknown
-RUN go build \
+RUN cd /build/transports && go build \
     -ldflags="-w -s -X main.Version=v${VERSION}" \
     -a -trimpath \
     -o /app/main \
@@ -330,8 +448,116 @@ The repository ships one `Dockerfile` at its root; the Debian variant exists onl
 **Build and run:**
 
 ```bash
-# Build the image
-docker build -f transports/Dockerfile.debian -t bifrost:dynamic-debian .
+# Build the image from the Dockerfile in the Accordion above
+docker build -f - -t bifrost:dynamic-debian . <<'EOF'
+# --- UI Build Stage: Build the React + Vite frontend ---
+FROM node:25-bookworm AS ui-builder
+WORKDIR /app
+
+# Copy UI package files and install dependencies
+COPY ui/package*.json ./
+RUN npm ci
+
+# Copy UI source code
+COPY ui/ ./
+
+# Build UI
+RUN npm run build-enterprise
+
+# --- Go Build Stage: Compile the Go binary ---
+FROM golang:1.27.3-bookworm AS builder
+WORKDIR /build
+
+# Install dependencies including gcc for CGO and sqlite
+RUN apt-get update && apt-get install -y \
+    gcc \
+    libc6-dev \
+    libsqlite3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set environment for CGO-enabled build (required for go-sqlite3 and plugins)
+ENV CGO_ENABLED=1 GOOS=linux GOTOOLCHAIN=auto
+
+# Copy every workspace module; nothing here resolves a published github.com/maximhq module
+COPY core/ ./core/
+COPY framework/ ./framework/
+COPY plugins/ ./plugins/
+COPY transports/ ./transports/
+
+RUN go work init && \
+    go work use ./core && \
+    go work use ./framework && \
+    go work use ./transports && \
+    for plugin_dir in ./plugins/*/; do \
+      if [ -f "$plugin_dir/go.mod" ]; then go work use "$plugin_dir" || exit 1; fi; \
+    done
+
+COPY --from=ui-builder /app/out ./transports/bifrost-http/ui
+
+# Build the binary with CGO enabled for DYNAMIC LINKING
+ARG VERSION=unknown
+RUN cd /build/transports && go build \
+    -ldflags="-w -s -X main.Version=v${VERSION}" \
+    -a -trimpath \
+    -o /app/main \
+    ./bifrost-http
+
+# The entrypoint ships with the transports module
+RUN cp transports/docker-entrypoint.sh /app/docker-entrypoint.sh
+
+# Verify build succeeded
+RUN test -f /app/main || (echo "Build failed" && exit 1)
+
+# --- Runtime Stage: Minimal runtime image ---
+FROM debian:bookworm-slim
+WORKDIR /app
+
+# Install runtime dependencies for CGO-enabled dynamic binary
+# libc6: GNU C Library (required for glibc-linked binaries)
+# ca-certificates: For HTTPS connections
+RUN apt-get update && apt-get install -y \
+    libc6 \
+    ca-certificates \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create data directory and set up user
+COPY --from=builder /app/main .
+COPY --from=builder /app/docker-entrypoint.sh .
+
+# Getting arguments
+ARG ARG_APP_PORT=8080
+ARG ARG_APP_HOST=0.0.0.0
+ARG ARG_LOG_LEVEL=info
+ARG ARG_LOG_STYLE=json
+ARG ARG_APP_DIR=/app/data
+
+# Environment variables with defaults (can be overridden at runtime)
+ENV APP_PORT=$ARG_APP_PORT \
+    APP_HOST=$ARG_APP_HOST \
+    LOG_LEVEL=$ARG_LOG_LEVEL \
+    LOG_STYLE=$ARG_LOG_STYLE \
+    APP_DIR=$ARG_APP_DIR
+
+RUN mkdir -p "$APP_DIR/logs" && \
+    useradd -m -s /bin/sh appuser && \
+    chown -R appuser:appuser /app && \
+    { [ "$APP_DIR" = "/app" ] || [ "${APP_DIR#/app/}" != "$APP_DIR" ] || chown -R appuser:appuser "$APP_DIR"; } && \
+    chmod +x /app/docker-entrypoint.sh
+USER appuser
+
+# Declare volume for data persistence
+VOLUME ["${APP_DIR}"]
+EXPOSE $APP_PORT
+
+# Health check for container status monitoring
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:${APP_PORT}/metrics || exit 1
+
+# Use entrypoint script that handles volume permissions and argument processing
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["/app/main"]
+EOF
 
 # Run the container
 docker run -p 8080:8080 -v ./plugins:/app/data/plugins bifrost:dynamic-debian

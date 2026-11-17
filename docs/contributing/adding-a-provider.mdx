@@ -1733,12 +1733,12 @@ case schemas.ProviderName:
 
 ### Step 8: Add CI/CD Environment Variables
 
-Add your provider's API key to all GitHub Actions workflow files that run tests.
+Provider tests run against live APIs from a developer machine or the manual `full-tests.yml` dispatch, which is the only workflow that carries provider secrets. `ci.yml` has no provider key on purpose: it gates build, vet and the unit tier only.
 
-#### Files to Update:
+#### Where the key goes:
 
-1. **`.github/workflows/pr-tests.yml`**
-2. **`.github/workflows/release-pipeline.yml`** (multiple jobs)
+1. **Local runs** — `.env` in the repository root, read by `make test-core`.
+2. **`.github/workflows/full-tests.yml`** — dispatch-only; add the secret reference when you dispatch with provider keys.
 
 #### Changes Required:
 
@@ -1752,7 +1752,7 @@ env:
     PROVIDER_NAME_API_KEY: ${{ secrets.PROVIDER_NAME_API_KEY }}
 ```
 
-**Example from pr-tests.yml**:
+**Example dispatch environment**:
 ```yaml
 env:
     OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -1760,12 +1760,6 @@ env:
     AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
     HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
 ```
-
-**Locations in release-pipeline.yml**:
-- `core-release` job
-- `framework-release` job
-- `plugins-release` job
-- `bifrost-http-release` job
 
 **Note**: Repository maintainers need to add the actual secret value in GitHub repository settings under `Settings > Secrets and variables > Actions`.
 
@@ -1785,8 +1779,7 @@ Before submitting your PR, verify all UI changes:
 - ✅ Provider listed in UI README (`ui/README.md`)
 - ✅ Provider import added to `core/bifrost.go`
 - ✅ Provider case added to `createBaseProvider` in `core/bifrost.go`
-- ✅ Environment variable added to `.github/workflows/pr-tests.yml`
-- ✅ Environment variable added to `.github/workflows/release-pipeline.yml` (4 jobs)
+- ✅ Provider key documented in `.env.example` for local `make test-core` runs
 
 ---
 
@@ -2295,16 +2288,13 @@ Your provider's API key must be added to GitHub repository secrets by a maintain
 - Secret name: `PROVIDER_NAME_API_KEY` (uppercase, underscores)
 - Example: `HUGGING_FACE_API_KEY`, `CEREBRAS_API_KEY`
 
-**Workflow Files**:
-The API key environment variable should already be added if you followed Step 8 in "Adding to UI". Verify it's present in:
-- `.github/workflows/pr-tests.yml`
-- `.github/workflows/release-pipeline.yml` (4 jobs)
+**Where tests run**:
+Provider suites are not part of the PR gate. Run them locally with `make test-core PROVIDER=<name>` (key in `.env`), or dispatch `full-tests.yml`.
 
 **Test Execution**:
-Tests will automatically run on:
-- Pull requests (PR tests workflow)
-- Release builds (release pipeline workflow)
-- Manual workflow triggers
+Tests run on:
+- a developer machine (`make test-core`)
+- a manual `full-tests.yml` dispatch
 
 **Skipping Tests**:
 If the API key secret is not set, your tests will be skipped (not fail) thanks to the `t.Skip()` check in your test file.

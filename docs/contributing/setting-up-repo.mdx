@@ -69,7 +69,8 @@ The system uses a provider-agnostic approach with well-defined interfaces in `co
 <Note>
 If you're setting up the repo for the first time, you may need to build the project at least once:
 ```bash
-make build LOCAL=1
+bash .github/workflows/scripts/setup-go-workspace.sh
+make build
 ```
 </Note>
 
@@ -131,11 +132,8 @@ This creates a `go.work` file that links all local modules for development.
 #### 4. Build the Application
 
 ```bash
-# Build UI and binary
+# Build UI and binary (always from the local go.work modules)
 make build
-
-# Build with local go.work modules (for development)
-make build LOCAL=1
 
 # Build with specific version
 make build VERSION=1.0.0
@@ -216,7 +214,7 @@ make build-ui     # Build UI for production
 ### Docker Commands
 
 ```bash
-make docker-image        # Build Docker image (LOCAL=1 uses Dockerfile.local)
+make docker-image        # Build the marga-runtime image from the root Dockerfile
 make docker-run         # Run Docker container
 ```
 
@@ -261,7 +259,7 @@ APP_DIR=                         # App data directory (empty by default, /app/da
 
 # Build configuration
 VERSION=dev-build                # Build version (default: dev-build)
-LOCAL=                           # Use local go.work for builds (e.g., make build LOCAL=1)
+                                 # Builds always use the local go.work modules
 ```
 
 Example with custom settings:

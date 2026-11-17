@@ -3,20 +3,15 @@ set -euo pipefail
 
 export GOTOOLCHAIN=auto
 
-# If go.work exists, skip
-if [ -f "go.work" ]; then
-  echo "🔍 Go workspace already exists, skipping initialization"
-  return
-fi
+# Usage: bash setup-go-workspace.sh   (or `source` it; both work)
+# Idempotent: an existing go.work is left exactly as it is.
 
-
-# Setup Go workspace for CI
-# Usage: source setup-go-workspace.sh
-echo "🔧 Setting up Go workspace..."
 if [ -f "go.work" ]; then
   echo "✅ Go workspace already exists, skipping init"
-  return 0 2>/dev/null || exit 0
+  exit 0
 fi
+
+echo "🔧 Setting up Go workspace..."
 go work init
 go work use ./core
 go work use ./framework
@@ -26,8 +21,7 @@ go work use ./cli
 # does not cover framework's dependencies, so it cannot build with GOWORK=off.
 go work use ./tests/cmd/seed
 # Discover plugin modules instead of listing them, so a newly added plugin
-# never needs a matching CI edit. test-all-plugins.sh globs plugins/*/go.mod
-# the same way, so the two lists cannot drift apart.
+# never needs a matching CI edit.
 for plugin_dir in ./plugins/*/; do
   if [ -f "$plugin_dir/go.mod" ]; then
     go work use "$plugin_dir"

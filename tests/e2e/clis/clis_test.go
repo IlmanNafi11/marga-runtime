@@ -749,7 +749,7 @@ type cellResult struct {
 
 // reportsDirEnv lets one `go test` invocation write its cells into its own
 // directory. The CI runner uses it to give each CLI filter an isolated
-// subdirectory; see .github/workflows/scripts/test-cli-harness.sh.
+// subdirectory; see `make run-cli-harness-test`.
 const reportsDirEnv = "BIFROST_E2E_CLIS_REPORTS_DIR"
 
 // keepReportsEnv preserves the reports directory across a run. See
@@ -766,7 +766,7 @@ var clearReportsOnce sync.Once
 // Two cases must NOT clear, and both are load-bearing:
 //
 //   - BIFROST_E2E_CLIS_REPORTS_DIR set. CI owns the directory lifecycle there:
-//     test-cli-harness.sh rm -rf's each per-label dir up front, and then its
+//     runner rm -rf's each per-label dir up front, and then its
 //     retry loop re-invokes `go test` against that SAME dir to re-run only the
 //     failed cells. Clearing on that second invocation would delete the passing
 //     cells' summaries, breaking count_failed_cells, the aggregate report and

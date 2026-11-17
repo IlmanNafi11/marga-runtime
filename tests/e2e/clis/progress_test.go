@@ -25,7 +25,7 @@ import (
 // Output goes to stderr, deliberately. Everything else the run emits -- go
 // test's own output, per-cell result lines, rate-limit notices -- goes to
 // stdout, so CI can redirect stdout to an artifact log and keep only this
-// table on the console. See .github/workflows/scripts/test-cli-harness.sh.
+// table on the console. See `make run-cli-harness-test`.
 
 const (
 	// progressIntervalEnv overrides the tick interval (any time.ParseDuration
