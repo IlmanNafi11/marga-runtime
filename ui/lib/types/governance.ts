@@ -45,6 +45,9 @@ export interface RateLimit {
 	request_reset_duration?: string; // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
 	request_current_usage: number; // Current request usage
 	request_last_reset: string; // ISO timestamp
+	// Flexible client-IP limits: at most ip_max_limit distinct client IPs per rolling ip_reset_duration
+	ip_max_limit?: number; // Maximum distinct client IPs allowed
+	ip_reset_duration?: string; // e.g., "1h", "1d"; rolling window, never calendar-aligned
 }
 
 export interface Team {
@@ -111,6 +114,8 @@ export interface VirtualKey {
 	team_id?: string;
 	customer_id?: string;
 	rate_limit_id?: string;
+	// The key's client-IP allowlist: when set, only listed IPs/CIDRs may use the key.
+	allowed_ips?: string[];
 	is_active: boolean;
 	expires_at?: string | null; // ISO 8601 UTC timestamp; null or absent means never expires
 	// Tri-state: absent/null inherits client.delete_expired_virtual_keys, true/false override it.
@@ -280,6 +285,8 @@ export interface CreateVirtualKeyRequest {
 	delete_after_expire?: boolean; // Omit to inherit client.delete_expired_virtual_keys; true/false override it; requires expires_at
 	// Omit to leave the feature off; [] lists nothing, which denies every model.
 	listed_models?: VirtualKeyListedModel[];
+	// Omit to leave the feature off; an empty array lists nothing (every IP refused).
+	allowed_ips?: string[];
 }
 
 export interface UpdateVirtualKeyRequest {
@@ -306,6 +313,8 @@ export interface UpdateVirtualKeyRequest {
 	// Replaces the block as a whole: [] clears it to deny-every-model, null switches the feature off
 	// (it must be sent when the block is switched off, while omitting it leaves it unchanged).
 	listed_models?: VirtualKeyListedModel[] | null;
+	// Tri-state: omitting leaves the key's list unchanged, null and [] both clear it.
+	allowed_ips?: string[] | null;
 }
 
 export interface BulkRotateVirtualKeysRequest {
@@ -372,6 +381,8 @@ export interface CreateRateLimitRequest {
 	token_reset_duration?: string; // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
 	request_max_limit?: number; // Maximum requests allowed
 	request_reset_duration?: string; // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
+	ip_max_limit?: number; // Maximum distinct client IPs allowed
+	ip_reset_duration?: string; // e.g., "1h", "1d"; rolling window, never calendar-aligned
 }
 
 export interface UpdateRateLimitRequest {
@@ -379,6 +390,8 @@ export interface UpdateRateLimitRequest {
 	token_reset_duration?: string | null; // e.g., "30s", "5m", "1h", "1d", "1w", "1M" (null to clear)
 	request_max_limit?: number | null; // Maximum requests allowed (null to clear)
 	request_reset_duration?: string | null; // e.g., "30s", "5m", "1h", "1d", "1w", "1M" (null to clear)
+	ip_max_limit?: number | null; // Maximum distinct client IPs allowed (null to clear)
+	ip_reset_duration?: string | null; // e.g., "1h", "1d" (null to clear)
 }
 
 export interface ResetUsageRequest {

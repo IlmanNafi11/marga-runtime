@@ -65,6 +65,11 @@ import { VirtualMcpAssignmentsEditor } from "@/components/mcp/virtualMcpAssignme
 import {
 	createDeleteAfterExpire,
 	diffVmcpAssignments,
+	allowedIPsCreate,
+	allowedIPsUpdate,
+	formatAllowedIPsInput,
+	invalidAllowedIPEntries,
+	ipRateLimitFields,
 	resolveOwnerProfileState,
 	updateDeleteAfterExpire,
 	vmcpAssignmentsDirty,
@@ -247,6 +252,25 @@ const formSchema = z
 		// Request limits
 		requestMaxLimit: z.number().int().nonnegative().optional(),
 		requestResetDuration: z.string().optional(),
+		// Client-IP limits
+		ipMaxLimit: z.number().int().nonnegative().optional(),
+		ipResetDuration: z.string().optional(),
+		// Client-IP allowlist as staged text; entries split on newlines and commas.
+		allowedIPs: z
+			.string()
+			.optional()
+			.superRefine((value, ctx) => {
+				const invalid = invalidAllowedIPEntries(value ?? "");
+				if (invalid.length > 0) {
+					ctx.addIssue({
+						code: "custom",
+						message: i18n.t("virtualKeys.allowedIPsInvalid", {
+							ns: "models",
+							entries: invalid.join(", "),
+						}),
+					});
+				}
+			}),
 	})
 	.refine(
 		(data) => {
@@ -704,6 +728,9 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 			tokenResetDuration: virtualKey?.rate_limit?.token_reset_duration || "1h",
 			requestMaxLimit: virtualKey?.rate_limit?.request_max_limit ?? undefined,
 			requestResetDuration: virtualKey?.rate_limit?.request_reset_duration || "1h",
+			ipMaxLimit: virtualKey?.rate_limit?.ip_max_limit ?? undefined,
+			ipResetDuration: virtualKey?.rate_limit?.ip_reset_duration || "1h",
+			allowedIPs: formatAllowedIPsInput(virtualKey?.allowed_ips),
 		},
 	});
 
@@ -887,6 +914,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 	const watchedRequestMaxLimit = form.watch("requestMaxLimit");
 	const watchedTokenResetDuration = form.watch("tokenResetDuration");
 	const watchedRequestResetDuration = form.watch("requestResetDuration");
+	const watchedIPMaxLimit = form.watch("ipMaxLimit");
 	const watchedBudgetCalendarAligned = form.watch("budgetCalendarAligned");
 
 	// Calendar alignment is VK-wide and applies to both budgets and rate limits: show the
@@ -970,6 +998,8 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 		form.setValue("tokenResetDuration", "1h", { shouldDirty: true });
 		form.setValue("requestMaxLimit", undefined, { shouldDirty: true });
 		form.setValue("requestResetDuration", "1h", { shouldDirty: true });
+		form.setValue("ipMaxLimit", undefined, { shouldDirty: true });
+		form.setValue("ipResetDuration", "1h", { shouldDirty: true });
 	};
 
 	// Build a request rate-limit payload from the form's rate-limit fields. Returns the field
@@ -1373,17 +1403,24 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 				const hadRateLimit = !!virtualKey.rate_limit;
 				const hasTokenMaxLimit = data.tokenMaxLimit !== undefined;
 				const hasRequestMaxLimit = data.requestMaxLimit !== undefined;
-				const hasRateLimit = hasTokenMaxLimit || hasRequestMaxLimit;
+				const hasIPMaxLimit = data.ipMaxLimit !== undefined;
+				const hasRateLimit = hasTokenMaxLimit || hasRequestMaxLimit || hasIPMaxLimit;
 				if (hasRateLimit) {
 					updateData.rate_limit = {
 						token_max_limit: data.tokenMaxLimit ?? null,
 						token_reset_duration: hasTokenMaxLimit ? data.tokenResetDuration || "1h" : null,
 						request_max_limit: data.requestMaxLimit ?? null,
 						request_reset_duration: hasRequestMaxLimit ? data.requestResetDuration || "1h" : null,
+						// The unique-IP window has no usage of its own to preserve, so a cleared max
+						// drops the pair outright instead of keeping the duration around.
+						...ipRateLimitFields(data.ipMaxLimit, data.ipResetDuration, "update"),
 					};
 				} else if (hadRateLimit) {
 					updateData.rate_limit = {};
 				}
+
+				// allowed_ips is tri-state: unchanged sends nothing, changed sends the list, emptied sends null.
+				Object.assign(updateData, allowedIPsUpdate({ staged: data.allowedIPs ?? "", stored: virtualKey.allowed_ips }));
 
 				await updateVirtualKey({
 					vkId: virtualKey.id,
@@ -1473,13 +1510,21 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 				// Add rate limit if enabled
 				const hasTokenMaxLimit = data.tokenMaxLimit !== undefined;
 				const hasRequestMaxLimit = data.requestMaxLimit !== undefined;
-				if (hasTokenMaxLimit || hasRequestMaxLimit) {
+				const hasIPMaxLimit = data.ipMaxLimit !== undefined;
+				if (hasTokenMaxLimit || hasRequestMaxLimit || hasIPMaxLimit) {
 					createData.rate_limit = {
 						token_max_limit: data.tokenMaxLimit,
 						token_reset_duration: hasTokenMaxLimit ? data.tokenResetDuration || "1h" : undefined,
 						request_max_limit: data.requestMaxLimit,
 						request_reset_duration: hasRequestMaxLimit ? data.requestResetDuration || "1h" : undefined,
+						...ipRateLimitFields(data.ipMaxLimit, data.ipResetDuration, "create"),
 					};
+				}
+
+				// Absent leaves the allowlist feature off on the new key.
+				const allowedIPs = allowedIPsCreate(data.allowedIPs ?? "");
+				if (allowedIPs !== undefined) {
+					createData.allowed_ips = allowedIPs;
 				}
 
 				const created = await createVirtualKey(isGovernedByOwnerProfile ? withoutKeyGovernance(createData) : createData).unwrap();
@@ -1866,7 +1911,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 											<div className="space-y-4">
 												<div className="flex items-center justify-between gap-2">
 													<Label className="text-sm font-medium">{t("virtualKeys.rateLimitingConfiguration")}</Label>
-													{isEditing && (virtualKey?.rate_limit || watchedTokenMaxLimit || watchedRequestMaxLimit) && (
+													{isEditing && (virtualKey?.rate_limit || watchedTokenMaxLimit || watchedRequestMaxLimit || watchedIPMaxLimit) && (
 														<Button
 															type="button"
 															variant="ghost"
@@ -1928,6 +1973,59 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 																options={resetDurationOptions}
 															/>
 															<FormMessage />
+														</FormItem>
+													)}
+												/>
+
+												<FormField
+													control={form.control}
+													name="ipMaxLimit"
+													render={({ field }) => (
+														<FormItem>
+															<NumberAndSelect
+																id="ipMaxLimit"
+																dataTestId="vk-ip-max-limit-input"
+																selectDataTestId="vk-ip-reset-duration-select"
+																labelClassName="font-normal"
+																label={t("virtualKeys.maximumIPs")}
+																value={field.value}
+																selectValue={form.watch("ipResetDuration") || "1h"}
+																onChangeNumber={(value) => {
+																	field.onChange(value);
+																}}
+																onChangeSelect={(value) =>
+																	form.setValue("ipResetDuration", value, {
+																		shouldDirty: true,
+																	})
+																}
+																options={resetDurationOptions}
+															/>
+															<FormMessage />
+														</FormItem>
+													)}
+												/>
+											</div>
+
+											{/* The allowlist is an access property of the key, not a window: it sits outside the
+											rate-limiting block, and setting it never clears the token/request/IP limits. */}
+											<div className="space-y-4">
+												<FormField
+													control={form.control}
+													name="allowedIPs"
+													render={({ field }) => (
+														<FormItem>
+															<FormLabel className="text-sm font-medium">{t("virtualKeys.allowedIPs")}</FormLabel>
+															<FormControl>
+																<Textarea
+																	placeholder={t("virtualKeys.allowedIPsPlaceholder")}
+																	data-testid="vk-allowed-ips-input"
+																	{...field}
+																	value={field.value ?? ""}
+																	rows={3}
+																/>
+															</FormControl>
+															<p className="text-muted-foreground text-xs">{t("virtualKeys.allowedIPsHelp")}</p>
+															<FormMessage data-testid="vk-allowed-ips-input-message" />
 														</FormItem>
 													)}
 												/>

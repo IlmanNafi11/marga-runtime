@@ -244,6 +244,62 @@ test.describe('Virtual Keys', () => {
     })
   })
 
+  test.describe('Virtual Key with Client IP Controls', () => {
+    test('should create virtual key with a unique-IP limit and read it back', async ({ virtualKeysPage }) => {
+      const vkData = createVirtualKeyWithRateLimit(SAMPLE_RATE_LIMITS.ipOnly, {
+        name: `IP Limit VK ${Date.now()}`,
+      })
+
+      createdVKs.push(vkData.name)
+      await virtualKeysPage.createVirtualKey(vkData)
+
+      const vkExists = await virtualKeysPage.virtualKeyExists(vkData.name)
+      expect(vkExists).toBe(true)
+
+      // The limit and its window survive the round trip through the API.
+      await virtualKeysPage.viewVirtualKey(vkData.name)
+      await virtualKeysPage.waitForSheetAnimation()
+      await expect(virtualKeysPage.page.getByTestId('vk-ip-max-limit-input')).toHaveValue(String(SAMPLE_RATE_LIMITS.ipOnly.ipMaxLimit))
+      await expect(virtualKeysPage.page.getByTestId('vk-ip-reset-duration-select')).toContainText('Daily')
+      await virtualKeysPage.closeSheet()
+    })
+
+    test('should create virtual key with an allowed-IP list', async ({ virtualKeysPage }) => {
+      const vkData = createVirtualKeyData({
+        name: `Allowed IPs VK ${Date.now()}`,
+        allowedIPs: ['10.0.0.0/24', '2001:db8::1'],
+      })
+
+      createdVKs.push(vkData.name)
+      await virtualKeysPage.createVirtualKey(vkData)
+
+      const vkExists = await virtualKeysPage.virtualKeyExists(vkData.name)
+      expect(vkExists).toBe(true)
+
+      // The textarea holds one entry per line.
+      await virtualKeysPage.viewVirtualKey(vkData.name)
+      await virtualKeysPage.waitForSheetAnimation()
+      await expect(virtualKeysPage.page.getByTestId('vk-allowed-ips-input')).toHaveValue('10.0.0.0/24\n2001:db8::1')
+      await virtualKeysPage.closeSheet()
+    })
+
+    test('should reject an unparseable allowed-IP entry inline', async ({ virtualKeysPage }) => {
+      await virtualKeysPage.createBtn.click()
+      await expect(virtualKeysPage.sheet).toBeVisible()
+      await virtualKeysPage.nameInput.fill(`Bad Allowed IPs VK ${Date.now()}`)
+      await virtualKeysPage.setAllowedIPs(['10.0.0.0/33'])
+      await virtualKeysPage.saveBtn.click()
+
+      // The sheet stays open and names the offending entry rather than sending it to the API.
+      // The message, not the textarea's own text, is what pins the inline rejection.
+      await expect(virtualKeysPage.sheet).toBeVisible()
+      const message = virtualKeysPage.page.getByTestId('vk-allowed-ips-input-message')
+      await expect(message).toContainText('10.0.0.0/33')
+      await expect(virtualKeysPage.page.getByTestId('vk-allowed-ips-input')).toHaveAttribute('aria-invalid', 'true')
+      await virtualKeysPage.closeSheet()
+    })
+  })
+
   test.describe('Virtual Key with Multiple Providers', () => {
     test('should create virtual key with two providers', async ({ virtualKeysPage }) => {
       const vkData = createVirtualKeyWithMultipleProviders(['openai', 'anthropic'], {

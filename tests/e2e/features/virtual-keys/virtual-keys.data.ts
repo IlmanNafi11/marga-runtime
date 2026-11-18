@@ -169,6 +169,10 @@ export const SAMPLE_RATE_LIMITS: Record<string, RateLimitConfig> = {
     requestMaxLimit: 500,
     requestResetDuration: '1h',
   },
+  ipOnly: {
+    ipMaxLimit: 3,
+    ipResetDuration: '1d',
+  },
 }
 
 /**

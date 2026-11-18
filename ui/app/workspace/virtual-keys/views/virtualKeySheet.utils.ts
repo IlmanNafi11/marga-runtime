@@ -125,3 +125,106 @@ export function listedModelsUpdate({
 	}
 	return { listed_models: listedModelsPayload(current) };
 }
+
+// Client-IP controls: allowed_ips is tri-state on the wire (omitted keeps the stored list, []/null
+// clears it), and the unique-IP limit rides the rate-limit row as ip_max_limit/ip_reset_duration.
+// The textarea holds the list as free text; entries split on newlines and commas.
+
+/** The allowed-IP entries staged in the textarea: trimmed, empty segments dropped, duplicates collapsed. */
+export function parseAllowedIPsInput(input: string): string[] {
+	const entries = input
+		.split(/[\n,]/)
+		.map((entry) => entry.trim())
+		.filter((entry) => entry !== "");
+	return [...new Set(entries)];
+}
+
+/** The textarea text for a stored allowed list; empty when the feature is off. */
+export function formatAllowedIPsInput(stored: string[] | null | undefined): string {
+	return stored?.join("\n") ?? "";
+}
+
+// An entry is a bare IPv4/IPv6 address or a CIDR block of either family, matching the server's
+// ValidateAllowedIPs. Ports, zones and whitespace are deliberately rejected rather than trimmed:
+// normalization is an enforcement concern, not something the sheet silently applies to stored data.
+const IPV4_PATTERN = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+const IPV6_CHARS = /^[0-9a-f:.]+$/i;
+
+function isIPv4(value: string): boolean {
+	const match = IPV4_PATTERN.exec(value);
+	return !!match && match.slice(1).every((octet) => Number(octet) <= 255 && (octet === "0" || !octet.startsWith("0")));
+}
+
+function isIPv6(value: string): boolean {
+	if (!value.includes(":")) return false;
+	// An embedded IPv4 tail is accepted only in its dotted form and only as the last segment,
+	// so "::ffff:1.2.3.4" passes while a port suffix ("1.2.3.4:80") does not.
+	const parts = value.split(":");
+	const dotted = parts.filter((part) => part.includes("."));
+	if (dotted.length > 1 || (dotted.length === 1 && (!isIPv4(dotted[0]) || parts.indexOf(dotted[0]) !== parts.length - 1))) {
+		return false;
+	}
+	return IPV6_CHARS.test(value) && parts.filter((p) => p !== "").length > 0;
+}
+
+function isIPOrCIDR(entry: string): boolean {
+	const [address, prefix, ...rest] = entry.split("/");
+	if (rest.length > 0) return false;
+	if (address === undefined) return false;
+	if (prefix !== undefined) {
+		if (prefix === "" || !/^\d{1,3}$/.test(prefix)) return false;
+		if (isIPv4(address)) return Number(prefix) <= 32;
+		if (isIPv6(address)) return Number(prefix) <= 128;
+		return false;
+	}
+	return isIPv4(address) || isIPv6(address);
+}
+
+/** Entries the backend would refuse, in input order, so the sheet can reject them inline. */
+export function invalidAllowedIPEntries(input: string): string[] {
+	return parseAllowedIPsInput(input).filter((entry) => !isIPOrCIDR(entry));
+}
+
+/** The `allowed_ips` field for a create body; undefined when nothing is staged (feature off). */
+export function allowedIPsCreate(staged: string): string[] | undefined {
+	const entries = parseAllowedIPsInput(staged);
+	return entries.length > 0 ? entries : undefined;
+}
+
+/**
+ * The `allowed_ips` field for an update body, or nothing when this save does not change the list.
+ * Absent keeps the stored value, null clears it; an empty textarea on a key that never had a list
+ * is not a change.
+ */
+export function allowedIPsUpdate({ staged, stored }: { staged: string; stored: string[] | null | undefined }): {
+	allowed_ips?: string[] | null;
+} {
+	const entries = parseAllowedIPsInput(staged);
+	const current = stored ?? [];
+	if (entries.length === current.length && entries.every((entry, index) => entry === current[index])) return {};
+	return { allowed_ips: entries.length > 0 ? entries : null };
+}
+
+// Create bodies have no stored row to clear, so an unset limit omits the pair; update bodies must
+// send explicit nulls to drop a limit the key used to have (a nil max clears the duration server-side).
+
+/** The unique-IP limit fields for an update body; the pair is sent or cleared together. */
+export function ipRateLimitFields(
+	ipMaxLimit: number | undefined,
+	ipResetDuration: string | undefined,
+	mode: "update",
+): { ip_max_limit?: number | null; ip_reset_duration?: string | null };
+/** The unique-IP limit fields for a create body, where nothing is ever cleared. */
+export function ipRateLimitFields(
+	ipMaxLimit: number | undefined,
+	ipResetDuration: string | undefined,
+	mode: "create",
+): { ip_max_limit?: number; ip_reset_duration?: string };
+export function ipRateLimitFields(
+	ipMaxLimit: number | undefined,
+	ipResetDuration: string | undefined,
+	mode: "create" | "update",
+): { ip_max_limit?: number | null; ip_reset_duration?: string | null } {
+	if (ipMaxLimit !== undefined) return { ip_max_limit: ipMaxLimit, ip_reset_duration: ipResetDuration || "1h" };
+	return mode === "update" ? { ip_max_limit: null, ip_reset_duration: null } : {};
+}

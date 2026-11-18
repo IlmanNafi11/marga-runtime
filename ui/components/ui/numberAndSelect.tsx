@@ -15,6 +15,7 @@ const NumberAndSelect = ({
 	options,
 	labelClassName,
 	placeholder,
+	selectDataTestId,
 	dataTestId,
 	inputClassName,
 }: {
@@ -27,6 +28,7 @@ const NumberAndSelect = ({
 	options?: { label: string; value: string }[];
 	labelClassName?: string;
 	placeholder?: string;
+	selectDataTestId?: string;
 	dataTestId?: string;
 	inputClassName?: string;
 }) => {
@@ -103,7 +105,7 @@ const NumberAndSelect = ({
 					{t("numberAndSelect.resetPeriod")}
 				</Label>
 				<Select value={selectValue} onValueChange={(value) => onChangeSelect(value as string)}>
-					<SelectTrigger className="m-0 w-full">
+					<SelectTrigger className="m-0 w-full" data-testid={selectDataTestId}>
 						<SelectValue />
 					</SelectTrigger>
 					<SelectContent>

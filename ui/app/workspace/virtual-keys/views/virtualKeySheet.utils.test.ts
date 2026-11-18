@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+	allowedIPsCreate,
+	allowedIPsUpdate,
 	createDeleteAfterExpire,
 	diffVmcpAssignments,
+	formatAllowedIPsInput,
+	invalidAllowedIPEntries,
+	ipRateLimitFields,
 	listedModelsUpdate,
+	parseAllowedIPsInput,
 	resolveOwnerProfileState,
 	updateDeleteAfterExpire,
 	vmcpAssignmentsDirty,
@@ -167,5 +173,101 @@ describe("listedModelsUpdate", () => {
 
 	it("sends nothing for a block switched off that was never on", () => {
 		expect(listedModelsUpdate({ touched: true, current: undefined, stored: undefined })).toEqual({});
+	});
+});
+
+describe("parseAllowedIPsInput", () => {
+	it("splits on newlines and commas and trims entries", () => {
+		expect(parseAllowedIPsInput("10.0.0.1\n10.0.0.2")).toEqual(["10.0.0.1", "10.0.0.2"]);
+		expect(parseAllowedIPsInput("10.0.0.1, 10.0.0.0/24")).toEqual(["10.0.0.1", "10.0.0.0/24"]);
+		expect(parseAllowedIPsInput("  10.0.0.1 \n\n")).toEqual(["10.0.0.1"]);
+	});
+
+	it("drops empty segments and collapses duplicates", () => {
+		expect(parseAllowedIPsInput("10.0.0.1,,10.0.0.1")).toEqual(["10.0.0.1"]);
+		expect(parseAllowedIPsInput("")).toEqual([]);
+	});
+});
+
+describe("formatAllowedIPsInput", () => {
+	it("joins the stored list one entry per line", () => {
+		expect(formatAllowedIPsInput(["10.0.0.1", "10.0.0.0/24"])).toBe("10.0.0.1\n10.0.0.0/24");
+	});
+
+	it("is empty when the feature is off", () => {
+		expect(formatAllowedIPsInput(undefined)).toBe("");
+		expect(formatAllowedIPsInput(null)).toBe("");
+		expect(formatAllowedIPsInput([])).toBe("");
+	});
+});
+
+describe("invalidAllowedIPEntries", () => {
+	it("accepts IPv4, IPv6 and CIDRs of either family", () => {
+		expect(invalidAllowedIPEntries("10.0.0.1\n2001:db8::1\n10.0.0.0/24\n2001:db8::/32")).toEqual([]);
+	});
+
+	it("rejects the entries the backend would refuse", () => {
+		expect(invalidAllowedIPEntries("999.1.1.1\n10.0.0.0/33\nnot an ip\n1.2.3.4:80")).toEqual([
+			"999.1.1.1",
+			"10.0.0.0/33",
+			"not an ip",
+			"1.2.3.4:80",
+		]);
+	});
+
+	it("reports the offending entries in input order, trimmed entries included", () => {
+		expect(invalidAllowedIPEntries("10.0.0.1\n300.1.1.1\n::ffff:1.2.3.4")).toEqual(["300.1.1.1"]);
+		expect(invalidAllowedIPEntries("")).toEqual([]);
+	});
+});
+
+describe("allowedIPsCreate", () => {
+	it("sends the parsed list when entries are staged", () => {
+		expect(allowedIPsCreate("10.0.0.1\n10.0.0.0/24")).toEqual(["10.0.0.1", "10.0.0.0/24"]);
+	});
+
+	it("omits the field when nothing is staged", () => {
+		expect(allowedIPsCreate("")).toBeUndefined();
+		expect(allowedIPsCreate("  \n ")).toBeUndefined();
+	});
+});
+
+describe("allowedIPsUpdate", () => {
+	it("sends nothing when the staged list matches the stored one", () => {
+		expect(allowedIPsUpdate({ staged: "10.0.0.1\n10.0.0.0/24", stored: ["10.0.0.1", "10.0.0.0/24"] })).toEqual({});
+		// Whitespace and separators in the textarea do not count as a change.
+		expect(allowedIPsUpdate({ staged: " 10.0.0.1, 10.0.0.0/24 ", stored: ["10.0.0.1", "10.0.0.0/24"] })).toEqual({});
+	});
+
+	it("sends the new list when entries are added or removed", () => {
+		expect(allowedIPsUpdate({ staged: "10.0.0.2", stored: ["10.0.0.1"] })).toEqual({ allowed_ips: ["10.0.0.2"] });
+	});
+
+	it("clears with null when the staged list is empty and the key had one", () => {
+		expect(allowedIPsUpdate({ staged: "", stored: ["10.0.0.1"] })).toEqual({ allowed_ips: null });
+	});
+
+	it("sends nothing when the feature was off and stays off", () => {
+		expect(allowedIPsUpdate({ staged: "", stored: undefined })).toEqual({});
+		expect(allowedIPsUpdate({ staged: "", stored: [] })).toEqual({});
+	});
+
+	it("turns the feature on from a key that never had it", () => {
+		expect(allowedIPsUpdate({ staged: "10.0.0.1", stored: undefined })).toEqual({ allowed_ips: ["10.0.0.1"] });
+	});
+});
+
+describe("ipRateLimitFields", () => {
+	it("maps a set limit with its duration, defaulting the duration to 1h", () => {
+		expect(ipRateLimitFields(3, "1d", "create")).toEqual({ ip_max_limit: 3, ip_reset_duration: "1d" });
+		expect(ipRateLimitFields(3, undefined, "update")).toEqual({ ip_max_limit: 3, ip_reset_duration: "1h" });
+	});
+
+	it("omits the pair on create when no limit is set", () => {
+		expect(ipRateLimitFields(undefined, "1h", "create")).toEqual({});
+	});
+
+	it("clears the pair with nulls on update when no limit is set", () => {
+		expect(ipRateLimitFields(undefined, "1h", "update")).toEqual({ ip_max_limit: null, ip_reset_duration: null });
 	});
 });

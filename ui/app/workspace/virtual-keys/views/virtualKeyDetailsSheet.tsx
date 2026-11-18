@@ -320,6 +320,19 @@ export default function VirtualKeyDetailSheet({
 									</div>
 								</div>
 							)}
+
+							{virtualKey.allowed_ips && virtualKey.allowed_ips.length > 0 && (
+								<div className="grid grid-cols-1 items-center gap-4 md:grid-cols-3">
+									<span className="text-muted-foreground text-sm">{t("virtualKeys.allowedIPs")}</span>
+									<div className="col-span-2 flex flex-wrap gap-1.5">
+										{virtualKey.allowed_ips.map((ip) => (
+											<Badge key={ip} variant="secondary" className="font-mono text-xs">
+												{ip}
+											</Badge>
+										))}
+									</div>
+								</div>
+							)}
 						</div>
 					</div>
 
@@ -880,9 +893,24 @@ export default function VirtualKeyDetailSheet({
 											</div>
 										) : null}
 
-										{displayRateLimit.token_max_limit == null && displayRateLimit.request_max_limit == null && (
-											<p className="text-muted-foreground text-sm">{t("virtualKeys.noRateLimits")}</p>
-										)}
+										{/* The unique-IP window counts distinct IPs, so it has no usage gauge to show. */}
+										{displayRateLimit.ip_max_limit != null ? (
+											<div className="space-y-3 rounded-lg border p-4">
+												<span className="text-sm font-medium">{t("virtualKeys.ipLimitsTitle")}</span>
+												<p className="text-sm">
+													{t("virtualKeys.ipLimitSummary", {
+														max: displayRateLimit.ip_max_limit,
+														period: parseResetPeriod(displayRateLimit.ip_reset_duration || ""),
+													})}
+												</p>
+											</div>
+										) : null}
+
+										{displayRateLimit.token_max_limit == null &&
+											displayRateLimit.request_max_limit == null &&
+											displayRateLimit.ip_max_limit == null && (
+												<p className="text-muted-foreground text-sm">{t("virtualKeys.noRateLimits")}</p>
+											)}
 									</div>
 								) : (
 									<p className="text-muted-foreground text-sm">{t("virtualKeys.noRateLimits")}</p>

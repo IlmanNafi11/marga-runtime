@@ -55,6 +55,8 @@ export interface RateLimitConfig {
   tokenResetDuration?: string;
   requestMaxLimit?: number;
   requestResetDuration?: string;
+  ipMaxLimit?: number;
+  ipResetDuration?: string;
 }
 
 /**
@@ -88,6 +90,11 @@ export interface VirtualKeyConfig {
   expiryPreset?: "Never" | "30 min" | "1 hour" | "24 hours" | "7 days";
   /** Only meaningful with an expiry; the checkbox is hidden otherwise. */
   deleteAfterExpire?: boolean;
+  /**
+   * Client-IP allowlist, written one entry per line into the sheet's textarea.
+   * An empty array leaves the field empty (the allowlist off).
+   */
+  allowedIPs?: string[];
   /** Metadata entries to add (create) or set (edit: an existing key's value is replaced). */
   metadata?: Record<string, string>;
   /** Edit only: metadata keys to remove. */
@@ -317,6 +324,11 @@ export class VirtualKeysPage extends BasePage {
       await this.setRateLimit(config.rateLimit);
     }
 
+    // Set the client-IP allowlist if specified
+    if (config.allowedIPs && config.allowedIPs.length > 0) {
+      await this.setAllowedIPs(config.allowedIPs);
+    }
+
     // Set entity assignment if specified
     if (config.entityType && config.entityType !== "none") {
       await this.setEntityAssignment(
@@ -449,6 +461,35 @@ export class VirtualKeysPage extends BasePage {
       const requestInput = this.page.locator("#requestMaxLimit");
       await requestInput.fill(String(rateLimit.requestMaxLimit));
     }
+
+    // Set the unique-IP limit and its window
+    if (rateLimit.ipMaxLimit !== undefined) {
+      await this.page.getByTestId("vk-ip-max-limit-input").fill(String(rateLimit.ipMaxLimit));
+      if (rateLimit.ipResetDuration) {
+        await this.page.getByTestId("vk-ip-reset-duration-select").click();
+        await this.page
+          .getByRole("option", {
+            name: this.resetDurationLabel(rateLimit.ipResetDuration),
+            exact: true,
+          })
+          .click();
+      }
+    }
+  }
+
+  /**
+   * Set the client-IP allowlist in the open sheet, one entry per line
+   */
+  async setAllowedIPs(entries: string[]): Promise<void> {
+    await this.page.getByTestId("vk-allowed-ips-input").fill(entries.join("\n"));
+  }
+
+  /**
+   * The inline validation message shown under the allowlist field, or "" when it is valid
+   */
+  async allowedIPsValidationMessage(): Promise<string> {
+    const message = this.page.getByTestId("vk-allowed-ips-input-message");
+    return (await message.textContent({ timeout: 1000 }).catch(() => "")) ?? "";
   }
 
   /**
