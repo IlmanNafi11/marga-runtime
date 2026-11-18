@@ -104,7 +104,8 @@ test('adds an entry, saves it, and removes it after a reopen', async ({ virtualK
     await expect(page.getByTestId('vk-listed-models-empty')).toBeVisible()
 
     // Stage the model through the popover a user picks from, then add it as a row.
-    await page.getByTestId('vk-listed-models-model-select').getByRole('combobox').click()
+    // The testid sits on the combobox trigger button itself (ModelSelector), not on a wrapper.
+    await page.getByTestId('vk-listed-models-model-select').click()
     const popover = page.locator('[data-slot="popover-content"]').last()
     const search = popover.locator('input').first()
     await search.waitFor({ state: 'visible', timeout: 5000 })
@@ -139,6 +140,8 @@ test('adds an entry, saves it, and removes it after a reopen', async ({ virtualK
 // and the next Save quietly turns the block off - turning a deny-all key back into a key that can
 // call every model its provider configs allow.
 test('reopening a saved key shows the stored block, not the off state', async ({ virtualKeysPage }) => {
+  await virtualKeysPage.goto()
+  await skipIfConfigStoreMissing(virtualKeysPage)
   await virtualKeysPage.dismissToasts()
   const name = `Listed Models Round Trip ${Date.now()}`
 
