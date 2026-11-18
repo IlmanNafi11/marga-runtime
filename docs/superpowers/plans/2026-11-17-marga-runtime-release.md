@@ -60,6 +60,14 @@ Images: `ghcr.io/ilmannafi11/marga-runtime` and `docker.io/ilmannafi/marga-runti
 
 Only the changelog section of the release body is empty, because `generate_release_notes` diffs against the previous tag and there is no earlier stable tag to diff from; the link points at `v0.0.1-spike...v0.0.1`.
 
+### `v0.1.0` release — run 44404409949, all jobs green
+
+Tag `v0.1.0` on `fd8de4f0a` (virtual key client-IP controls). Every job succeeded on the first attempt.
+
+Published: GitHub Release `marga-runtime v0.1.0`, `prerelease=false`, 10 assets. Verified after download: `sha256sum -c` passes; the linux/amd64 asset is a statically linked stripped ELF that cold-boots with `/health` 200 and `v0.1.0` in the banner. This time `generate_release_notes` had a previous stable tag to diff from, so the release body carries the real changelog.
+
+Images: `ghcr.io/ilmannafi11/marga-runtime` and `docker.io/ilmannafi/marga-runtime` each carry `v0.1.0`, `0.1.0`, `amd64`, `arm64` and `latest`, with `latest`, `v0.1.0` and `0.1.0` resolving to the same digest (`sha256:e6bf52ef…`). Both pull anonymously.
+
 ## Review Focus
 
 1. **A build that resolves published `maximhq` modules instead of the local tree** — a build that goes green while compiling someone else's code. Pinned by Task 1's guard test.
