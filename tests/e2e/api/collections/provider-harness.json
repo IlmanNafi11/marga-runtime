@@ -341871,6 +341871,479 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "362. Virtual key client-IP controls on inference (ip limit)",
+      "description": "Wire-level pins for a virtual key's client-IP controls: the allowed-IP list and the unique-IP limit, enforced by the governance plugin before any upstream call. The client IP is resolved the same way request logs resolve it - the leftmost X-Forwarded-For entry, else the TCP peer Bifrost accepted the connection from - and it is resolved for enforcement even when log capture is off, so no IP reaches the logs because of these rules. Rows: (1) a key whose allowed_ips is 203.0.113.0/24 serves an X-Forwarded-For of 203.0.113.7 and refuses 198.51.100.9 with 403 access_blocked and the generic reason 'Client IP is not allowed for this virtual key', which never enumerates the list; (2) a key whose rate limit carries ip_max_limit 1 over 1h serves the first distinct client IP and refuses the second with 429 rate_limited and a reason naming count, max and window; (3) the same allowed list refuses a request with no forwarding header at all - the loopback peer is outside the list - pinning that the resolved peer address feeds the gate, not just forwarded headers. Each row creates its own run-scoped virtual key through the management API and deletes it; the list rows use documentation-range addresses so no real client is named. A regression shows as: the unlisted follow-up or the no-header request served with 200, or the second distinct IP served instead of 429.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai gpt-4o-mini vk ip limit: a listed client ip is served and an unlisted one is refused with 403 - ip limit",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-iplimit-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function cleanup(state) {",
+                  "  if (!state.vk) { return; }",
+                  "  call('DELETE', '/api/governance/virtual-keys/' + state.vk.id, null, function (res) {",
+                  "    pm.test('cleanup: the virtual key was removed', function () { pm.expect([200, 204, 404], res ? res.text() : 'no response').to.include(res && res.code); });",
+                  "  });",
+                  "}",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function seq(list, done) { var i = 0; (function next(ok) { if (ok === false || i >= list.length) { return done(ok !== false); } list[i++](next); })(); }",
+                  "var run = 'run-' + Date.now();",
+                  "var state = { run: run };",
+                  "function virtualKey(cb) {",
+                  "  call('POST', '/api/governance/virtual-keys', {",
+                  "    name: PREFIX + 'vk-' + run,",
+                  "    provider_configs: [{ provider: 'openai', allowed_models: ['*'], key_ids: ['*'], weight: 1 }],",
+                  "    allowed_ips: ['203.0.113.0/24']",
+                  "  }, function (res, j) {",
+                  "    if (!expectOk('setup: created the virtual key', res)) { return cb(false); }",
+                  "    var vk = (j || {}).virtual_key || {};",
+                  "    state.vk = { id: vk.id, value: (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value }; cb();",
+                  "  });",
+                  "}",
+                  "// Sweep keys an earlier crashed run left behind, then create this row's own key.",
+                  "call('GET', '/api/governance/virtual-keys', null, function (r0, j0) {",
+                  "  var stale = ((j0 && j0.virtual_keys) || []).filter(function (v) { return isStale(v.name); });",
+                  "  (function sweep() {",
+                  "    if (stale.length) { return call('DELETE', '/api/governance/virtual-keys/' + stale.shift().id, null, function () { sweep(); }); }",
+                  "    seq([function (next) { virtualKey(next); }], function () {",
+                  "      pm.collectionVariables.set('iplimit1State', JSON.stringify(state));",
+                  "      pm.collectionVariables.set('iplimit1VK', (state.vk || {}).value || 'missing');",
+                  "      pm.collectionVariables.set('iplimit1Run', run);",
+                  "    });",
+                  "  })();",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-iplimit-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function cleanup(state) {",
+                  "  if (!state.vk) { return; }",
+                  "  call('DELETE', '/api/governance/virtual-keys/' + state.vk.id, null, function (res) {",
+                  "    pm.test('cleanup: the virtual key was removed', function () { pm.expect([200, 204, 404], res ? res.text() : 'no response').to.include(res && res.code); });",
+                  "  });",
+                  "}",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function seq(list, done) { var i = 0; (function next(ok) { if (ok === false || i >= list.length) { return done(ok !== false); } list[i++](next); })(); }",
+                  "function chat(state, forwardedFor, cb) {",
+                  "  var h = { 'Content-Type': 'application/json' };",
+                  "  h['x-bf-vk'] = state.vk.value;",
+                  "  if (forwardedFor) { h['X-Forwarded-For'] = forwardedFor; }",
+                  "  var b = { model: 'openai/gpt-4o-mini', messages: [{ role: 'user', content: 'Reply with the single word: ok' }], max_tokens: 3 };",
+                  "  pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: h, body: { mode: 'raw', raw: JSON.stringify(b) } }, function (err, res) {",
+                  "    if (err) { pm.test('the follow-up request reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null); }",
+                  "    cb(res);",
+                  "  });",
+                  "}",
+                  "var state = JSON.parse(pm.collectionVariables.get('iplimit1State') || '{}');",
+                  "pm.test('ip limit: the listed client ip was served', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "if (!state.vk) {",
+                  "  pm.test('ip limit: the virtual key was created', function () { pm.expect.fail('setup did not produce a virtual key, so the refusal half of this row never ran'); });",
+                  "} else {",
+                  "  chat(state, '198.51.100.9', function (res) {",
+                  "    var text = res ? res.text() : '';",
+                  "    pm.test('ip limit: an unlisted client ip is refused with 403', function () {",
+                  "      pm.expect(res && res.code, 'failed: ' + text).to.eql(403);",
+                  "    });",
+                  "    pm.test('ip limit: the refusal names the allowed-list policy without enumerating the list', function () {",
+                  "      pm.expect(text).to.include('Client IP is not allowed for this virtual key');",
+                  "      pm.expect(text).to.include('access_blocked');",
+                  "      pm.expect(text).to.not.include('203.0.113');",
+                  "    });",
+                  "    cleanup(state);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{iplimit1VK}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "203.0.113.7"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-200] openai gpt-4o-mini vk ip limit: a second distinct client ip is refused with 429 by the unique-ip limit - ip limit",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-iplimit-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function cleanup(state) {",
+                  "  if (!state.vk) { return; }",
+                  "  call('DELETE', '/api/governance/virtual-keys/' + state.vk.id, null, function (res) {",
+                  "    pm.test('cleanup: the virtual key was removed', function () { pm.expect([200, 204, 404], res ? res.text() : 'no response').to.include(res && res.code); });",
+                  "  });",
+                  "}",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function seq(list, done) { var i = 0; (function next(ok) { if (ok === false || i >= list.length) { return done(ok !== false); } list[i++](next); })(); }",
+                  "var run = 'run-' + Date.now();",
+                  "var state = { run: run };",
+                  "function virtualKey(cb) {",
+                  "  call('POST', '/api/governance/virtual-keys', {",
+                  "    name: PREFIX + 'vk-' + run,",
+                  "    provider_configs: [{ provider: 'openai', allowed_models: ['*'], key_ids: ['*'], weight: 1 }],",
+                  "    rate_limit: { ip_max_limit: 1, ip_reset_duration: '1h' }",
+                  "  }, function (res, j) {",
+                  "    if (!expectOk('setup: created the virtual key', res)) { return cb(false); }",
+                  "    var vk = (j || {}).virtual_key || {};",
+                  "    state.vk = { id: vk.id, value: (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value }; cb();",
+                  "  });",
+                  "}",
+                  "// Sweep keys an earlier crashed run left behind, then create this row's own key.",
+                  "call('GET', '/api/governance/virtual-keys', null, function (r0, j0) {",
+                  "  var stale = ((j0 && j0.virtual_keys) || []).filter(function (v) { return isStale(v.name); });",
+                  "  (function sweep() {",
+                  "    if (stale.length) { return call('DELETE', '/api/governance/virtual-keys/' + stale.shift().id, null, function () { sweep(); }); }",
+                  "    seq([function (next) { virtualKey(next); }], function () {",
+                  "      pm.collectionVariables.set('iplimit2State', JSON.stringify(state));",
+                  "      pm.collectionVariables.set('iplimit2VK', (state.vk || {}).value || 'missing');",
+                  "      pm.collectionVariables.set('iplimit2Run', run);",
+                  "    });",
+                  "  })();",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-iplimit-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function cleanup(state) {",
+                  "  if (!state.vk) { return; }",
+                  "  call('DELETE', '/api/governance/virtual-keys/' + state.vk.id, null, function (res) {",
+                  "    pm.test('cleanup: the virtual key was removed', function () { pm.expect([200, 204, 404], res ? res.text() : 'no response').to.include(res && res.code); });",
+                  "  });",
+                  "}",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function seq(list, done) { var i = 0; (function next(ok) { if (ok === false || i >= list.length) { return done(ok !== false); } list[i++](next); })(); }",
+                  "function chat(state, forwardedFor, cb) {",
+                  "  var h = { 'Content-Type': 'application/json' };",
+                  "  h['x-bf-vk'] = state.vk.value;",
+                  "  if (forwardedFor) { h['X-Forwarded-For'] = forwardedFor; }",
+                  "  var b = { model: 'openai/gpt-4o-mini', messages: [{ role: 'user', content: 'Reply with the single word: ok' }], max_tokens: 3 };",
+                  "  pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: h, body: { mode: 'raw', raw: JSON.stringify(b) } }, function (err, res) {",
+                  "    if (err) { pm.test('the follow-up request reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null); }",
+                  "    cb(res);",
+                  "  });",
+                  "}",
+                  "var state = JSON.parse(pm.collectionVariables.get('iplimit2State') || '{}');",
+                  "pm.test('ip limit: the first distinct client ip was served', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "if (!state.vk) {",
+                  "  pm.test('ip limit: the virtual key was created', function () { pm.expect.fail('setup did not produce a virtual key, so the limit half of this row never ran'); });",
+                  "} else {",
+                  "  chat(state, '198.51.100.9', function (res) {",
+                  "    var text = res ? res.text() : '';",
+                  "    pm.test('ip limit: a second distinct client ip is refused with 429', function () {",
+                  "      pm.expect(res && res.code, 'failed: ' + text).to.eql(429);",
+                  "    });",
+                  "    pm.test('ip limit: the refusal names the count, the max and the window', function () {",
+                  "      pm.expect(text).to.include('ip limit exceeded');",
+                  "      pm.expect(text).to.include('1/1');",
+                  "      pm.expect(text).to.include('resets every 1h');",
+                  "      pm.expect(text).to.include('rate_limited');",
+                  "    });",
+                  "    cleanup(state);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{iplimit2VK}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "203.0.113.7"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-403] openai gpt-4o-mini vk ip limit: a request with no client ip header is refused by the allowed list - ip limit",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-iplimit-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function cleanup(state) {",
+                  "  if (!state.vk) { return; }",
+                  "  call('DELETE', '/api/governance/virtual-keys/' + state.vk.id, null, function (res) {",
+                  "    pm.test('cleanup: the virtual key was removed', function () { pm.expect([200, 204, 404], res ? res.text() : 'no response').to.include(res && res.code); });",
+                  "  });",
+                  "}",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function seq(list, done) { var i = 0; (function next(ok) { if (ok === false || i >= list.length) { return done(ok !== false); } list[i++](next); })(); }",
+                  "var run = 'run-' + Date.now();",
+                  "var state = { run: run };",
+                  "function virtualKey(cb) {",
+                  "  call('POST', '/api/governance/virtual-keys', {",
+                  "    name: PREFIX + 'vk-' + run,",
+                  "    provider_configs: [{ provider: 'openai', allowed_models: ['*'], key_ids: ['*'], weight: 1 }],",
+                  "    allowed_ips: ['203.0.113.0/24']",
+                  "  }, function (res, j) {",
+                  "    if (!expectOk('setup: created the virtual key', res)) { return cb(false); }",
+                  "    var vk = (j || {}).virtual_key || {};",
+                  "    state.vk = { id: vk.id, value: (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value }; cb();",
+                  "  });",
+                  "}",
+                  "// Sweep keys an earlier crashed run left behind, then create this row's own key.",
+                  "call('GET', '/api/governance/virtual-keys', null, function (r0, j0) {",
+                  "  var stale = ((j0 && j0.virtual_keys) || []).filter(function (v) { return isStale(v.name); });",
+                  "  (function sweep() {",
+                  "    if (stale.length) { return call('DELETE', '/api/governance/virtual-keys/' + stale.shift().id, null, function () { sweep(); }); }",
+                  "    seq([function (next) { virtualKey(next); }], function () {",
+                  "      pm.collectionVariables.set('iplimit3State', JSON.stringify(state));",
+                  "      pm.collectionVariables.set('iplimit3VK', (state.vk || {}).value || 'missing');",
+                  "      pm.collectionVariables.set('iplimit3Run', run);",
+                  "    });",
+                  "  })();",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-iplimit-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function cleanup(state) {",
+                  "  if (!state.vk) { return; }",
+                  "  call('DELETE', '/api/governance/virtual-keys/' + state.vk.id, null, function (res) {",
+                  "    pm.test('cleanup: the virtual key was removed', function () { pm.expect([200, 204, 404], res ? res.text() : 'no response').to.include(res && res.code); });",
+                  "  });",
+                  "}",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function seq(list, done) { var i = 0; (function next(ok) { if (ok === false || i >= list.length) { return done(ok !== false); } list[i++](next); })(); }",
+                  "var state = JSON.parse(pm.collectionVariables.get('iplimit3State') || '{}');",
+                  "pm.test('ip limit: a request with no client ip header is refused with 403', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(403);",
+                  "});",
+                  "pm.test('ip limit: the loopback peer is outside the list and the refusal says so generically', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(text).to.include('Client IP is not allowed for this virtual key');",
+                  "  pm.expect(text).to.include('access_blocked');",
+                  "  pm.expect(text).to.not.include('203.0.113');",
+                  "});",
+                  "cleanup(state);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{iplimit3VK}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
