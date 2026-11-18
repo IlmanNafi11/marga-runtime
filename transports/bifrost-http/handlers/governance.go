@@ -1283,6 +1283,8 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 			rl.TokenResetDuration = d.rateLimit.TokenResetDuration
 			rl.RequestMaxLimit = d.rateLimit.RequestMaxLimit
 			rl.RequestResetDuration = d.rateLimit.RequestResetDuration
+			rl.IPMaxLimit = d.rateLimit.IPMaxLimit
+			rl.IPResetDuration = d.rateLimit.IPResetDuration
 			if err := validateRateLimit(&rl); err != nil {
 				return err
 			}
@@ -1303,6 +1305,8 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 					rl.TokenResetDuration = d.rateLimit.TokenResetDuration
 					rl.RequestMaxLimit = d.rateLimit.RequestMaxLimit
 					rl.RequestResetDuration = d.rateLimit.RequestResetDuration
+					rl.IPMaxLimit = d.rateLimit.IPMaxLimit
+					rl.IPResetDuration = d.rateLimit.IPResetDuration
 					if err := validateRateLimit(&rl); err != nil {
 						return err
 					}
@@ -1326,6 +1330,8 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 				TokenResetDuration:   d.rateLimit.TokenResetDuration,
 				RequestMaxLimit:      d.rateLimit.RequestMaxLimit,
 				RequestResetDuration: d.rateLimit.RequestResetDuration,
+				IPMaxLimit:           d.rateLimit.IPMaxLimit,
+				IPResetDuration:      d.rateLimit.IPResetDuration,
 				TokenLastReset:       time.Now(),
 				RequestLastReset:     time.Now(),
 			}
@@ -1486,7 +1492,7 @@ func buildVKCreateModelBudgets(provider *string, providerName string, mbs []vkMo
 	for _, mb := range mbs {
 		var rl *configstoreTables.TableRateLimit
 		if mb.RateLimit != nil {
-			rl = rateLimitFromRequestFields(mb.RateLimit.TokenMaxLimit, mb.RateLimit.TokenResetDuration, mb.RateLimit.RequestMaxLimit, mb.RateLimit.RequestResetDuration)
+			rl = rateLimitFromRequestFields(mb.RateLimit.TokenMaxLimit, mb.RateLimit.TokenResetDuration, mb.RateLimit.RequestMaxLimit, mb.RateLimit.RequestResetDuration, nil, nil)
 		}
 		out = append(out, vkModelConfigDesired{
 			provider:          provider,
@@ -1519,7 +1525,7 @@ func buildVKUpdateModelBudgets(provider *string, providerName string, mbs []vkMo
 			if isRateLimitRemovalRequest(mb.RateLimit) {
 				rlRemove = true
 			} else {
-				rl = rateLimitFromRequestFields(mb.RateLimit.TokenMaxLimit, mb.RateLimit.TokenResetDuration, mb.RateLimit.RequestMaxLimit, mb.RateLimit.RequestResetDuration)
+				rl = rateLimitFromRequestFields(mb.RateLimit.TokenMaxLimit, mb.RateLimit.TokenResetDuration, mb.RateLimit.RequestMaxLimit, mb.RateLimit.RequestResetDuration, nil, nil)
 			}
 		}
 		out = append(out, vkModelConfigDesired{
@@ -1868,6 +1874,71 @@ func rejectUpdateRateLimitIPFields(holder string, rl *UpdateRateLimitRequest) er
 	return nil
 }
 
+// rejectVKProviderConfigIPFields refuses the IP pair inside a VK's provider_configs and
+// model_budgets rate limits. Those rows are held by a provider/model config, never by the key
+// itself, so the unique-IP window is never evaluated there; and allowed_ips is a property of the
+// key, not of one provider. Accepting either would store config that does nothing.
+func rejectVKProviderConfigIPFields(providerConfigs []struct {
+	Provider          string                  `json:"provider" validate:"required"`
+	Weight            *float64                `json:"weight,omitempty"`
+	AllowedModels     schemas.WhiteList       `json:"allowed_models,omitempty"`     // ["*"] allows all models; empty denies all
+	BlacklistedModels schemas.BlackList       `json:"blacklisted_models,omitempty"` // ["*"] blocks all models; empty blocks none
+	Budgets           []CreateBudgetRequest   `json:"budgets,omitempty"`            // Multi-budget for provider config
+	RateLimit         *CreateRateLimitRequest `json:"rate_limit,omitempty"`         // Provider-level rate limit
+	ModelBudgets      []vkModelBudgetRequest  `json:"model_budgets,omitempty"`      // Per-model budgets/rate-limits under this provider
+	KeyIDs            schemas.WhiteList       `json:"key_ids,omitempty"`            // List of DBKey UUIDs to associate with this provider config
+}, holder string) error {
+	for _, pc := range providerConfigs {
+		if err := rejectCreateRateLimitIPFields(holder+" "+pc.Provider+" rate limit", pc.RateLimit); err != nil {
+			return err
+		}
+		for _, mb := range pc.ModelBudgets {
+			if mb.RateLimit == nil {
+				continue
+			}
+			if mb.RateLimit.IPMaxLimit != nil {
+				return fmt.Errorf("%s %s model %s does not support ip_max_limit: client-IP controls are virtual-key only", holder, pc.Provider, mb.ModelName)
+			}
+			if mb.RateLimit.IPResetDuration != nil {
+				return fmt.Errorf("%s %s model %s does not support ip_reset_duration: client-IP controls are virtual-key only", holder, pc.Provider, mb.ModelName)
+			}
+		}
+	}
+	return nil
+}
+
+// rejectVKProviderConfigUpdateIPFields is rejectVKProviderConfigIPFields for the update form,
+// where a rate limit may be explicitly removed.
+func rejectVKProviderConfigUpdateIPFields(providerConfigs []struct {
+	ID                *uint                        `json:"id,omitempty"` // null for new entries
+	Provider          string                       `json:"provider" validate:"required"`
+	Weight            *float64                     `json:"weight,omitempty"`
+	AllowedModels     schemas.WhiteList            `json:"allowed_models,omitempty"`     // ["*"] allows all models; empty denies all
+	BlacklistedModels schemas.BlackList            `json:"blacklisted_models,omitempty"` // ["*"] blocks all models; empty blocks none
+	Budgets           []CreateBudgetRequest        `json:"budgets,omitempty"`            // Multi-budget for provider config
+	RateLimit         *UpdateRateLimitRequest      `json:"rate_limit,omitempty"`         // Provider-level rate limit
+	ModelBudgets      []vkModelBudgetUpdateRequest `json:"model_budgets,omitempty"`      // Per-model budgets/rate-limits under this provider (full desired set when provider_configs is supplied)
+	KeyIDs            schemas.WhiteList            `json:"key_ids,omitempty"`            // List of DBKey UUIDs to associate with this provider config
+}, holder string) error {
+	for _, pc := range providerConfigs {
+		if err := rejectUpdateRateLimitIPFields(holder+" "+pc.Provider+" rate limit", pc.RateLimit); err != nil {
+			return err
+		}
+		for _, mb := range pc.ModelBudgets {
+			if mb.RateLimit == nil {
+				continue
+			}
+			if mb.RateLimit.IPMaxLimit != nil {
+				return fmt.Errorf("%s %s model %s does not support ip_max_limit: client-IP controls are virtual-key only", holder, pc.Provider, mb.ModelName)
+			}
+			if mb.RateLimit.IPResetDuration != nil {
+				return fmt.Errorf("%s %s model %s does not support ip_reset_duration: client-IP controls are virtual-key only", holder, pc.Provider, mb.ModelName)
+			}
+		}
+	}
+	return nil
+}
+
 // rejectAllowedIPsField refuses a client-IP allowlist on a holder that has no such property.
 // raw is the undecoded field, so "sent as null" is refused too rather than read as absent.
 func rejectAllowedIPsField(holder string, raw json.RawMessage) error {
@@ -1884,6 +1955,9 @@ type CreateTeamRequest struct {
 	Budgets         []CreateBudgetRequest   `json:"budgets,omitempty"`          // Multi-budget: each must have a unique reset_duration
 	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`       // Team can have its own rate limit
 	CalendarAligned bool                    `json:"calendar_aligned,omitempty"` // Team-wide: snap all team budgets and rate-limit resets to calendar boundaries
+	// AllowedIPs is refused here: client-IP controls are virtual-key only. Declared so the
+	// field is named in a 400 instead of silently dropped by the decoder.
+	AllowedIPs json.RawMessage `json:"allowed_ips,omitempty"`
 }
 
 // UpdateTeamRequest represents the request body for updating a team
@@ -1896,6 +1970,9 @@ type UpdateTeamRequest struct {
 	// ResetBudgetUsage zeroes current usage on the reconciled budgets when true.
 	// The reset boundary is left alone; only accumulated spend is cleared.
 	ResetBudgetUsage *bool `json:"reset_budget_usage,omitempty"`
+	// AllowedIPs is refused here: client-IP controls are virtual-key only. Declared so the
+	// field is named in a 400 instead of silently dropped by the decoder.
+	AllowedIPs json.RawMessage `json:"allowed_ips,omitempty"`
 }
 
 // CreateCustomerRequest represents the request body for creating a customer
@@ -1905,6 +1982,9 @@ type CreateCustomerRequest struct {
 	Budget          *CreateBudgetRequest    `json:"budget,omitempty"`  // Deprecated: use budgets
 	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`
 	CalendarAligned bool                    `json:"calendar_aligned,omitempty"`
+	// AllowedIPs is refused here: client-IP controls are virtual-key only. Declared so the
+	// field is named in a 400 instead of silently dropped by the decoder.
+	AllowedIPs json.RawMessage `json:"allowed_ips,omitempty"`
 }
 
 // UpdateCustomerRequest represents the request body for updating a customer
@@ -1916,6 +1996,9 @@ type UpdateCustomerRequest struct {
 	CalendarAligned *bool                   `json:"calendar_aligned,omitempty"`
 	// ResetBudgetUsage zeroes current usage on the reconciled budgets when true.
 	ResetBudgetUsage *bool `json:"reset_budget_usage,omitempty"`
+	// AllowedIPs is refused here: client-IP controls are virtual-key only. Declared so the
+	// field is named in a 400 instead of silently dropped by the decoder.
+	AllowedIPs json.RawMessage `json:"allowed_ips,omitempty"`
 }
 
 // CreateModelConfigRequest represents the request body for creating a model config
@@ -1926,6 +2009,9 @@ type CreateModelConfigRequest struct {
 	ScopeID   *string                 `json:"scope_id,omitempty"` // Required for non-global scopes (e.g. the virtual key ID)
 	Budgets   []CreateBudgetRequest   `json:"budgets,omitempty"`  // A model config may carry multiple budgets (distinct reset windows)
 	RateLimit *CreateRateLimitRequest `json:"rate_limit,omitempty"`
+	// AllowedIPs is refused here: client-IP controls are virtual-key only. Declared so the
+	// field is named in a 400 instead of silently dropped by the decoder.
+	AllowedIPs json.RawMessage `json:"allowed_ips,omitempty"`
 }
 
 // UpdateModelConfigRequest represents the request body for updating a model config.
@@ -1938,6 +2024,9 @@ type UpdateModelConfigRequest struct {
 	RateLimit *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
 	// ResetBudgetUsage zeroes current usage on the reconciled budgets when true.
 	ResetBudgetUsage *bool `json:"reset_budget_usage,omitempty"`
+	// AllowedIPs is refused here: client-IP controls are virtual-key only. Declared so the
+	// field is named in a 400 instead of silently dropped by the decoder.
+	AllowedIPs json.RawMessage `json:"allowed_ips,omitempty"`
 }
 
 // UpdateProviderGovernanceRequest represents the request body for updating provider governance
@@ -1948,6 +2037,9 @@ type UpdateProviderGovernanceRequest struct {
 	CalendarAligned *bool                   `json:"calendar_aligned,omitempty"`
 	// ResetBudgetUsage zeroes current usage on the reconciled budgets when true.
 	ResetBudgetUsage *bool `json:"reset_budget_usage,omitempty"`
+	// AllowedIPs is refused here: client-IP controls are virtual-key only. Declared so the
+	// field is named in a 400 instead of silently dropped by the decoder.
+	AllowedIPs json.RawMessage `json:"allowed_ips,omitempty"`
 }
 
 // RegisterRoutes registers all governance routes with the default OSS family handlers.
@@ -2544,6 +2636,10 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, err.Error())
 		return
 	}
+	if err := rejectVKProviderConfigIPFields(req.ProviderConfigs, "provider"); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
 	if req.RateLimit != nil {
 		rl := configstoreTables.TableRateLimit{
 			TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
@@ -2697,7 +2793,7 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 				providerNameStr := string(providerName)
 				var pcRateLimit *configstoreTables.TableRateLimit
 				if pc.RateLimit != nil {
-					pcRateLimit = rateLimitFromRequestFields(pc.RateLimit.TokenMaxLimit, pc.RateLimit.TokenResetDuration, pc.RateLimit.RequestMaxLimit, pc.RateLimit.RequestResetDuration)
+					pcRateLimit = rateLimitFromRequestFields(pc.RateLimit.TokenMaxLimit, pc.RateLimit.TokenResetDuration, pc.RateLimit.RequestMaxLimit, pc.RateLimit.RequestResetDuration, nil, nil)
 				}
 				vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
 					provider:              &providerNameStr,
@@ -2717,7 +2813,7 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		// Fold VK top-level + per-provider governance into VK-scoped model configs.
 		var topRateLimit *configstoreTables.TableRateLimit
 		if req.RateLimit != nil {
-			topRateLimit = rateLimitFromRequestFields(req.RateLimit.TokenMaxLimit, req.RateLimit.TokenResetDuration, req.RateLimit.RequestMaxLimit, req.RateLimit.RequestResetDuration)
+			topRateLimit = rateLimitFromRequestFields(req.RateLimit.TokenMaxLimit, req.RateLimit.TokenResetDuration, req.RateLimit.RequestMaxLimit, req.RateLimit.RequestResetDuration, req.RateLimit.IPMaxLimit, req.RateLimit.IPResetDuration)
 		}
 		if err := h.syncVKGovernanceToModelConfigs(ctx, tx, &vk, vkModelConfigDesired{
 			budgetsProvided:   true,
@@ -3009,6 +3105,33 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
+	if req.AllowedIPs.Set && !req.AllowedIPs.Null {
+		if err := configstoreTables.ValidateAllowedIPs(req.AllowedIPs.Value); err != nil {
+			SendError(ctx, 400, err.Error())
+			return
+		}
+	}
+	if err := rejectVKProviderConfigUpdateIPFields(req.ProviderConfigs, "provider"); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
+	if req.RateLimit != nil && !isRateLimitRemovalRequest(req.RateLimit) {
+		// Validated against a zero row: the update merges the request onto the stored limit, so a
+		// maximum sent without its window here keeps the stored window and is checked after the
+		// merge. What this rejects early is a pair that cannot be valid on its own.
+		rl := configstoreTables.TableRateLimit{
+			TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
+			TokenResetDuration:   req.RateLimit.TokenResetDuration,
+			RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
+			RequestResetDuration: req.RateLimit.RequestResetDuration,
+			IPMaxLimit:           req.RateLimit.IPMaxLimit,
+			IPResetDuration:      req.RateLimit.IPResetDuration,
+		}
+		if err := validateRateLimit(&rl); err != nil {
+			SendError(ctx, 400, fmt.Sprintf("Invalid rate limit: %s", err.Error()))
+			return
+		}
+	}
 	// provider_configs is the full desired set (configs it leaves out are deleted), so checking the
 	// request alone covers what the key will hold.
 	updateProviders := make([]string, 0, len(req.ProviderConfigs))
@@ -3263,7 +3386,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					pName := string(providerName)
 					var pcRL *configstoreTables.TableRateLimit
 					if pc.RateLimit != nil {
-						pcRL = rateLimitFromRequestFields(pc.RateLimit.TokenMaxLimit, pc.RateLimit.TokenResetDuration, pc.RateLimit.RequestMaxLimit, pc.RateLimit.RequestResetDuration)
+						pcRL = rateLimitFromRequestFields(pc.RateLimit.TokenMaxLimit, pc.RateLimit.TokenResetDuration, pc.RateLimit.RequestMaxLimit, pc.RateLimit.RequestResetDuration, nil, nil)
 					}
 					vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
 						provider:              &pName,
@@ -3339,7 +3462,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 						if isRateLimitRemovalRequest(pc.RateLimit) {
 							rlRemove = true
 						} else {
-							pcRL = rateLimitFromRequestFields(pc.RateLimit.TokenMaxLimit, pc.RateLimit.TokenResetDuration, pc.RateLimit.RequestMaxLimit, pc.RateLimit.RequestResetDuration)
+							pcRL = rateLimitFromRequestFields(pc.RateLimit.TokenMaxLimit, pc.RateLimit.TokenResetDuration, pc.RateLimit.RequestMaxLimit, pc.RateLimit.RequestResetDuration, nil, nil)
 						}
 					}
 					vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
@@ -3392,7 +3515,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			if isRateLimitRemovalRequest(req.RateLimit) {
 				top.rateLimitRemove = true
 			} else {
-				top.rateLimit = rateLimitFromRequestFields(req.RateLimit.TokenMaxLimit, req.RateLimit.TokenResetDuration, req.RateLimit.RequestMaxLimit, req.RateLimit.RequestResetDuration)
+				top.rateLimit = rateLimitFromRequestFields(req.RateLimit.TokenMaxLimit, req.RateLimit.TokenResetDuration, req.RateLimit.RequestMaxLimit, req.RateLimit.RequestResetDuration, req.RateLimit.IPMaxLimit, req.RateLimit.IPResetDuration)
 			}
 		}
 		if err := h.syncVKGovernanceToModelConfigs(ctx, tx, vk, top, vkGovProviders, req.ProviderConfigs != nil, usageReset); err != nil {
@@ -3822,6 +3945,14 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid JSON")
 		return
 	}
+	if err := rejectCreateRateLimitIPFields("teams", req.RateLimit); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
+	if err := rejectAllowedIPsField("teams", req.AllowedIPs); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
 	// Validate required fields
 	if req.Name == "" {
 		SendError(ctx, 400, "Team name is required")
@@ -3955,6 +4086,14 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 	var req UpdateTeamRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, 400, "Invalid JSON")
+		return
+	}
+	if err := rejectUpdateRateLimitIPFields("teams", req.RateLimit); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
+	if err := rejectAllowedIPsField("teams", req.AllowedIPs); err != nil {
+		SendError(ctx, 400, err.Error())
 		return
 	}
 	// The operator's explicit "reset usage" choice. Carried into budget
@@ -4245,6 +4384,14 @@ func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid JSON")
 		return
 	}
+	if err := rejectCreateRateLimitIPFields("customers", req.RateLimit); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
+	if err := rejectAllowedIPsField("customers", req.AllowedIPs); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
 	if len(req.Budgets) > 0 && req.Budget != nil {
 		SendError(ctx, 400, "only one of 'budget' or 'budgets' may be set")
 		return
@@ -4357,6 +4504,14 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 	var req UpdateCustomerRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, 400, "Invalid JSON")
+		return
+	}
+	if err := rejectUpdateRateLimitIPFields("customers", req.RateLimit); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
+	if err := rejectAllowedIPsField("customers", req.AllowedIPs); err != nil {
+		SendError(ctx, 400, err.Error())
 		return
 	}
 	// The operator's explicit "reset usage" choice. Carried into budget
@@ -5044,6 +5199,14 @@ func (h *GovernanceHandler) createModelConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid JSON")
 		return
 	}
+	if err := rejectCreateRateLimitIPFields("model configs", req.RateLimit); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
+	if err := rejectAllowedIPsField("model configs", req.AllowedIPs); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
 	// Validate required fields
 	if req.ModelName == "" {
 		SendError(ctx, 400, "Model name is required")
@@ -5197,6 +5360,14 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 	var req UpdateModelConfigRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, 400, "Invalid JSON")
+		return
+	}
+	if err := rejectUpdateRateLimitIPFields("model configs", req.RateLimit); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
+	if err := rejectAllowedIPsField("model configs", req.AllowedIPs); err != nil {
+		SendError(ctx, 400, err.Error())
 		return
 	}
 	// The operator's explicit "reset usage" choice. Carried into budget
@@ -5456,6 +5627,14 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 	var req UpdateProviderGovernanceRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, 400, "Invalid JSON")
+		return
+	}
+	if err := rejectUpdateRateLimitIPFields("provider governance", req.RateLimit); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
+	if err := rejectAllowedIPsField("provider governance", req.AllowedIPs); err != nil {
+		SendError(ctx, 400, err.Error())
 		return
 	}
 	// The operator's explicit "reset usage" choice. Carried into budget
