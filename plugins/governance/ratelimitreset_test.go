@@ -6,7 +6,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const resetBenchmarkVirtualKeys = 5000
@@ -877,4 +882,267 @@ func markRequestRateLimitExpired(store *LocalGovernanceStore, rateLimitID string
 	clone.RequestCurrentUsage = 123
 	clone.RequestLastReset = time.Now().Add(-2 * time.Minute)
 	store.rateLimits.Store(rateLimitID, &clone)
+}
+
+// ---------------------------------------------------------------------------
+// Unique-IP window (plan Task 3b, SPEC B10/B11/B14)
+// ---------------------------------------------------------------------------
+
+// buildIPRateLimit builds a rate limit carrying only an IP pair: no token or
+// request limit, so the only gate that can refuse is the IP window.
+func buildIPRateLimit(id string, maxLimit int64, duration string) *configstoreTables.TableRateLimit {
+	rl := buildRateLimit(id, 1_000_000, 1_000_000)
+	rl.TokenMaxLimit = nil
+	rl.TokenResetDuration = nil
+	rl.RequestMaxLimit = nil
+	rl.RequestResetDuration = nil
+	rl.IPMaxLimit = &maxLimit
+	rl.IPResetDuration = &duration
+	return rl
+}
+
+// newIPWindowStore builds a resolver over a store holding one active virtual
+// key whose rate limit is the given one, so the only limit the funnel gathers
+// is the key's own.
+func newIPWindowStore(t *testing.T, rateLimit *configstoreTables.TableRateLimit) (*BudgetResolver, string) {
+	t.Helper()
+	logger := NewMockLogger()
+	vk := buildVirtualKeyWithRateLimit("vk-ip-window", "sk-bf-ip-window", "IP Window VK", rateLimit)
+	store, err := NewLocalGovernanceStore(t.Context(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
+	}, nil, nil)
+	require.NoError(t, err)
+	return NewBudgetResolver(store, nil, logger, nil), "sk-bf-ip-window"
+}
+
+// evaluateFromIP drives evaluateLimits the way a request whose context carries
+// the given client IP does: the IP is set on the context exactly as
+// ConvertToBifrostContext sets it, and the limits are the ones the funnel
+// settles for the presented key.
+func evaluateFromIP(resolver *BudgetResolver, vkValue, clientIP string) *EvaluationResult {
+	ctx := resolverCtx(resolver.store, vkValue)
+	if clientIP != "" {
+		ctx.SetValue(schemas.BifrostContextKeyClientIP, clientIP)
+	}
+	limits := grant.NewLimits(nil, []schemas.Limit{
+		{ID: "ip-window-rl", HolderKind: string(grant.LimitHolderVirtualKey), HolderID: "vk-ip-window", HolderName: "IP Window VK"},
+	})
+	ctx.Grant().SetLimits(limits)
+	return resolver.evaluateLimits(ctx, &EvaluationRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		Provider:    schemas.OpenAI,
+		Model:       "gpt-4o",
+	}, limits)
+}
+
+// TestUniqueIPWindowEnforcement covers the B10 admission behavior: N distinct
+// IPs pass, the N+1th is refused with a reason naming count, max and duration,
+// a repeat IP consumes no slot, and the window roll admits again.
+func TestUniqueIPWindowEnforcement(t *testing.T) {
+	rl := buildIPRateLimit("ip-window-rl", 2, "1h")
+
+	t.Run("N distinct IPs pass and the N+1th is rate limited", func(t *testing.T) {
+		resolver, vkValue := newIPWindowStore(t, rl)
+		assertDecision(t, DecisionAllow, evaluateFromIP(resolver, vkValue, "10.0.0.1"))
+		assertDecision(t, DecisionAllow, evaluateFromIP(resolver, vkValue, "10.0.0.2"))
+		result := evaluateFromIP(resolver, vkValue, "10.0.0.3")
+		assertDecision(t, DecisionRateLimited, result)
+		assert.Contains(t, result.Reason, "2/2")
+		assert.Contains(t, result.Reason, "1h")
+	})
+
+	t.Run("repeat IP consumes no extra slot", func(t *testing.T) {
+		resolver, vkValue := newIPWindowStore(t, rl)
+		assertDecision(t, DecisionAllow, evaluateFromIP(resolver, vkValue, "10.0.0.1"))
+		assertDecision(t, DecisionAllow, evaluateFromIP(resolver, vkValue, "10.0.0.1"))
+		assertDecision(t, DecisionAllow, evaluateFromIP(resolver, vkValue, "10.0.0.2"))
+		// Still only two distinct IPs seen: the repeat did not consume a slot.
+		assertDecision(t, DecisionRateLimited, evaluateFromIP(resolver, vkValue, "10.0.0.3"))
+	})
+
+	t.Run("window roll admits again", func(t *testing.T) {
+		resolver, vkValue := newIPWindowStore(t, rl)
+		assertDecision(t, DecisionAllow, evaluateFromIP(resolver, vkValue, "10.0.0.1"))
+		assertDecision(t, DecisionAllow, evaluateFromIP(resolver, vkValue, "10.0.0.2"))
+		assertDecision(t, DecisionRateLimited, evaluateFromIP(resolver, vkValue, "10.0.0.3"))
+
+		// Age the window past its duration, the way lazy expiry sees it on the
+		// next access. The record's start is read through the store's window
+		// manager; the helper exists so the test does not sleep an hour.
+		store := resolver.store.(*LocalGovernanceStore)
+		store.ipWindows.rewind("ip-window-rl", time.Hour+time.Minute)
+
+		assertDecision(t, DecisionAllow, evaluateFromIP(resolver, vkValue, "10.0.0.3"))
+	})
+}
+
+// TestIPWindowUnresolvableIPFailOpen covers B9's limit half: with only the
+// unique-IP limit configured, an unresolvable IP is skipped, not refused, and
+// other limits on the same row are still enforced.
+func TestIPWindowUnresolvableIPFailOpen(t *testing.T) {
+	t.Run("unresolvable IP is allowed and other limits still checked", func(t *testing.T) {
+		rl := buildIPRateLimit("ip-window-rl", 1, "1h")
+		requestMax := int64(5)
+		rl.RequestMaxLimit = &requestMax
+		rl.RequestCurrentUsage = 5 // exhausted on requests
+		resolver, vkValue := newIPWindowStore(t, rl)
+		assertDecision(t, DecisionRequestLimited, evaluateFromIP(resolver, vkValue, "not-an-ip"))
+	})
+
+	t.Run("unresolvable IP skips only the IP check", func(t *testing.T) {
+		rl := buildIPRateLimit("ip-window-rl", 1, "1h")
+		rl.RequestCurrentUsage = 0
+		resolver, vkValue := newIPWindowStore(t, rl)
+		assertDecision(t, DecisionAllow, evaluateFromIP(resolver, vkValue, ""))
+	})
+}
+
+// TestIPWindowHolderFilter covers B14: a limit gathered for a non-VK holder is
+// never IP-checked even when its row carries IP fields (which the API refuses
+// to store, but a config.json or an old row may hold).
+func TestIPWindowHolderFilter(t *testing.T) {
+	rl := buildIPRateLimit("ip-window-rl", 1, "1h")
+	resolver, vkValue := newIPWindowStore(t, rl)
+
+	ctx := resolverCtx(resolver.store, vkValue)
+	ctx.SetValue(schemas.BifrostContextKeyClientIP, "10.9.9.9")
+	limits := grant.NewLimits(nil, []schemas.Limit{
+		{ID: "ip-window-rl", HolderKind: string(grant.LimitHolderTeam), HolderID: "team-1", HolderName: "Team One"},
+	})
+	ctx.Grant().SetLimits(limits)
+	result := resolver.evaluateLimits(ctx, &EvaluationRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		Provider:    schemas.OpenAI,
+		Model:       "gpt-4o",
+	}, limits)
+	assertDecision(t, DecisionAllow, result)
+}
+
+// TestIPWindowConcurrency pins the atomic check-and-insert at the boundary:
+// with IPMaxLimit=2 and five goroutines arriving on five distinct IPs, exactly
+// two are admitted. A read-then-write window would admit more.
+func TestIPWindowConcurrency(t *testing.T) {
+	rl := buildIPRateLimit("ip-window-rl", 2, "1h")
+	resolver, vkValue := newIPWindowStore(t, rl)
+
+	const goroutines = 5
+	results := make(chan Decision, goroutines)
+	for i := 0; i < goroutines; i++ {
+		ip := fmt.Sprintf("10.1.0.%d", i+1)
+		go func() {
+			results <- evaluateFromIP(resolver, vkValue, ip).Decision
+		}()
+	}
+	admitted := 0
+	for i := 0; i < goroutines; i++ {
+		if <-results == DecisionAllow {
+			admitted++
+		}
+	}
+	assert.Equal(t, 2, admitted, "exactly IPMaxLimit distinct IPs must be admitted under concurrency")
+}
+
+// TestIPWindowLifecycle covers B11: an upsert that raises or keeps the max
+// keeps the open set, a duration change re-anchors with an empty set, clearing
+// the max drops the record, DeleteRateLimit drops it, and
+// rebuildInMemoryStructures clears everything.
+func TestIPWindowLifecycle(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("raising the max keeps the open set", func(t *testing.T) {
+		rl := buildIPRateLimit("ip-window-rl", 1, "1h")
+		resolver, vkValue := newIPWindowStore(t, rl)
+		assertDecision(t, DecisionAllow, evaluateFromIP(resolver, vkValue, "10.0.0.1"))
+		assertDecision(t, DecisionRateLimited, evaluateFromIP(resolver, vkValue, "10.0.0.2"))
+
+		store := resolver.store.(*LocalGovernanceStore)
+		raised := buildIPRateLimit("ip-window-rl", 2, "1h")
+		store.UpsertRateLimitConfig(ctx, "ip-window-rl", raised)
+		assertDecision(t, DecisionAllow, evaluateFromIP(resolver, vkValue, "10.0.0.2"))
+	})
+
+	t.Run("duration change re-anchors with an empty set", func(t *testing.T) {
+		rl := buildIPRateLimit("ip-window-rl", 1, "1h")
+		resolver, vkValue := newIPWindowStore(t, rl)
+		assertDecision(t, DecisionAllow, evaluateFromIP(resolver, vkValue, "10.0.0.1"))
+
+		store := resolver.store.(*LocalGovernanceStore)
+		changed := buildIPRateLimit("ip-window-rl", 1, "2h")
+		store.UpsertRateLimitConfig(ctx, "ip-window-rl", changed)
+		// The set was emptied: a fresh IP is admitted even though the old
+		// window had consumed its slot.
+		assertDecision(t, DecisionAllow, evaluateFromIP(resolver, vkValue, "10.0.0.2"))
+	})
+
+	t.Run("clearing the max drops the record", func(t *testing.T) {
+		rl := buildIPRateLimit("ip-window-rl", 1, "1h")
+		resolver, vkValue := newIPWindowStore(t, rl)
+		assertDecision(t, DecisionAllow, evaluateFromIP(resolver, vkValue, "10.0.0.1"))
+
+		store := resolver.store.(*LocalGovernanceStore)
+		cleared := buildRateLimit("ip-window-rl", 1_000_000, 1_000_000)
+		cleared.TokenMaxLimit = nil
+		cleared.TokenResetDuration = nil
+		cleared.RequestMaxLimit = nil
+		cleared.RequestResetDuration = nil
+		store.UpsertRateLimitConfig(ctx, "ip-window-rl", cleared)
+		assert.Nil(t, store.ipWindows.record("ip-window-rl"), "record must be dropped when the max is cleared")
+	})
+
+	t.Run("delete drops the record", func(t *testing.T) {
+		rl := buildIPRateLimit("ip-window-rl", 1, "1h")
+		resolver, vkValue := newIPWindowStore(t, rl)
+		assertDecision(t, DecisionAllow, evaluateFromIP(resolver, vkValue, "10.0.0.1"))
+
+		store := resolver.store.(*LocalGovernanceStore)
+		store.DeleteRateLimit(ctx, "ip-window-rl")
+		assert.Nil(t, store.ipWindows.record("ip-window-rl"), "record must be dropped on delete")
+	})
+
+	t.Run("rebuild clears all windows", func(t *testing.T) {
+		rl := buildIPRateLimit("ip-window-rl", 1, "1h")
+		resolver, vkValue := newIPWindowStore(t, rl)
+		assertDecision(t, DecisionAllow, evaluateFromIP(resolver, vkValue, "10.0.0.1"))
+
+		store := resolver.store.(*LocalGovernanceStore)
+		store.rebuildInMemoryStructures(ctx, nil, nil, nil, nil, []configstoreTables.TableRateLimit{*rl}, nil, nil)
+		assert.Nil(t, store.ipWindows.record("ip-window-rl"), "rebuild must clear the window")
+		// And the rebuilt row works again from scratch.
+		assertDecision(t, DecisionAllow, evaluateFromIP(resolver, vkValue, "10.0.0.1"))
+	})
+}
+
+// BenchmarkCheckRateLimitWithIP measures the per-request cost the IP window
+// adds to CheckRateLimits, both for a key without IP config (must be nil-check
+// only, B13) and for a key with the window active.
+func BenchmarkCheckRateLimitWithIP(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	b.Run("no ip config", func(b *testing.B) {
+		plain := buildRateLimit("plain-rl", 1_000_000, 1_000_000)
+		store := newStandaloneStoreForResetBenchmark()
+		store.rateLimits.Store("plain-rl", plain)
+		limits := []schemas.Limit{{ID: "plain-rl", HolderKind: string(grant.LimitHolderVirtualKey), HolderID: "vk"}}
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := store.CheckRateLimits(ctx, limits, nil, nil); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+
+	b.Run("ip limit active", func(b *testing.B) {
+		ipLimit := buildIPRateLimit("ip-window-rl", 1_000_000, "1h")
+		store := newStandaloneStoreForResetBenchmark()
+		store.rateLimits.Store("ip-window-rl", ipLimit)
+		limits := []schemas.Limit{{ID: "ip-window-rl", HolderKind: string(grant.LimitHolderVirtualKey), HolderID: "vk"}}
+		ctx.SetValue(schemas.BifrostContextKeyClientIP, "10.0.0.1")
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := store.CheckRateLimits(ctx, limits, nil, nil); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }

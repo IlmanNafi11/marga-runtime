@@ -61,6 +61,9 @@ type LocalGovernanceStore struct {
 	// request costs one sync.Map load and never re-parses a CIDR (B8). Maintained by the same
 	// write paths that maintain virtualKeys; see allowedIPsCache.
 	allowedIPLists allowedIPsCache
+	// ipWindows holds each rate limit's rolling set of admitted client IPs, keyed by
+	// rate-limit row ID. See ipWindows for why the set lives here and not on the context.
+	ipWindows ipWindows
 
 	// Last DB usages for budgets and rate limits
 	LastDBUsagesBudgetsMu            sync.RWMutex       // Last DB usages for budgets
@@ -574,6 +577,7 @@ func (gs *LocalGovernanceStore) UpsertRateLimitConfig(ctx context.Context, rateL
 		raw, exists := gs.rateLimits.Load(rateLimitID)
 		if !exists {
 			if _, loaded := gs.rateLimits.LoadOrStore(rateLimitID, config); !loaded {
+				gs.ipWindows.reconcile(rateLimitID, config)
 				return
 			}
 			continue
@@ -581,6 +585,7 @@ func (gs *LocalGovernanceStore) UpsertRateLimitConfig(ctx context.Context, rateL
 		old, ok := raw.(*configstoreTables.TableRateLimit)
 		if !ok || old == nil {
 			gs.rateLimits.Store(rateLimitID, config)
+			gs.ipWindows.reconcile(rateLimitID, config)
 			return
 		}
 		merged := *config
@@ -589,6 +594,7 @@ func (gs *LocalGovernanceStore) UpsertRateLimitConfig(ctx context.Context, rateL
 		merged.RequestCurrentUsage = old.RequestCurrentUsage
 		merged.RequestLastReset = old.RequestLastReset
 		if gs.rateLimits.CompareAndSwap(rateLimitID, raw, &merged) {
+			gs.ipWindows.reconcile(rateLimitID, &merged)
 			return
 		}
 	}
@@ -597,7 +603,7 @@ func (gs *LocalGovernanceStore) UpsertRateLimitConfig(ctx context.Context, rateL
 // DeleteRateLimit deletes a rate limit from the local store.
 func (gs *LocalGovernanceStore) DeleteRateLimit(ctx context.Context, rateLimitID string) {
 	gs.rateLimits.Delete(rateLimitID)
-	// Clean up LastDB baselines so the gossip delta doesn't carry stale entries.
+	gs.ipWindows.drop(rateLimitID)
 	gs.LastDBUsagesRateLimitsTokensMu.Lock()
 	delete(gs.LastDBUsagesTokensRateLimits, rateLimitID)
 	gs.LastDBUsagesRateLimitsTokensMu.Unlock()
@@ -3619,6 +3625,7 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 	gs.providers = sync.Map{}
 
 	gs.allowedIPLists.clear()
+	gs.ipWindows.clear()
 
 	// Build customers map
 	for i := range customers {
@@ -5326,6 +5333,11 @@ func (gs *LocalGovernanceStore) CheckBudgets(ctx context.Context, limits []schem
 }
 
 // CheckRateLimits is CheckBudgets for rate limits.
+//
+// This is the only rate-limit path that still pairs each limit with its loaded row, so it is
+// where the unique-IP window is enforced: CheckRateLimit receives the rows grouped by entity
+// label, with the holder kind already lost (B6/B14). Everything else — tokens, requests — stays
+// in CheckRateLimit, which this delegates to.
 func (gs *LocalGovernanceStore) CheckRateLimits(ctx context.Context, limits []schemas.Limit, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error) {
 	if len(limits) == 0 {
 		return DecisionAllow, nil
@@ -5335,6 +5347,12 @@ func (gs *LocalGovernanceStore) CheckRateLimits(ctx context.Context, limits []sc
 		rateLimit := gs.LoadRateLimit(ctx, limit.ID)
 		if rateLimit == nil {
 			continue
+		}
+		// The window is checked in the same pass that pairs the row with its limit, before
+		// the request is allowed: a request that is about to be refused must not have
+		// consumed one of the key's slots.
+		if violation, exceeded := gs.ipWindowViolation(ctx, limit, rateLimit); exceeded {
+			return DecisionRateLimited, fmt.Errorf("rate limit violated for %s: %s", limitLabel(limit), violation)
 		}
 		label := limitLabel(limit)
 		entityWise[label] = append(entityWise[label], rateLimit)
