@@ -127,6 +127,7 @@ Rate limits protect your system from abuse and manage traffic by setting thresho
 Bifrost supports two types of rate limits that work in parallel:
 - **Request Limits**: Control the maximum number of API calls that can be made within a set duration (e.g., 100 requests per minute).
 - **Token Limits**: Control the maximum number of tokens (prompt + completion) that can be processed within a set duration (e.g., 50,000 tokens per hour).
+- **Unique-IP Limits** (virtual keys only): Control how many **distinct client IPs** may use the key within a rolling window (e.g., at most 5 IPs per hour). The next new client IP is refused with `429` until the window rolls; a repeated IP consumes no extra slot. See [Client IP controls](./virtual-keys#client-ip-controls).
 
 ### Rate Limit Hierarchy
 

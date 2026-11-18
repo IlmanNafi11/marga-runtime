@@ -26,6 +26,7 @@ Virtual Keys are the primary governance entity in Bifrost. Users and application
 - **Cost Management** - Independent budgets (checked along with team/customer budgets if attached)
 - **Budget Overrides** - Temporarily add spending capacity without changing the base budget
 - **Rate Limiting** - Token and request-based throttling (VK-level only)
+- **Client IP Controls** - Allowed-IP/CIDR list on the key and a distinct-client-IP limit on its rate limit (VK-level only)
 - **Key Restrictions** - Limit VK to specific provider API keys (if configured, VK can only use those keys)
 - **Exclusive Attachment** - Belongs to either one team OR one customer OR neither (mutually exclusive). In Enterprise, a key can also belong to a business unit or a user, still only one owner
 - **Active/Inactive Status** - Enable/disable access instantly
@@ -53,6 +54,10 @@ Virtual Keys are the primary governance entity in Bifrost. Users and application
 **Associations:**
 - **Team**: Assign to existing team (mutually exclusive with customer)
 - **Customer**: Assign to existing customer (mutually exclusive with team)
+
+**Client IP controls** (optional):
+- **Maximum IPs**: Max distinct client IPs per window (leave empty to allow any number of IPs)
+- **Allowed IPs**: One IP or CIDR block per line (e.g. `10.0.0.1`, `10.0.0.0/24`); leave empty to allow any IP. See [Client IP controls](#client-ip-controls).
 
 **Expiry** (optional): Pick **Never**, a preset (30 min to 7 days), or a custom date and time. See [Key Expiry](#key-expiry).
 
@@ -95,7 +100,9 @@ curl -X POST http://localhost:8080/api/governance/virtual-keys \
       "token_max_limit": 10000,
       "token_reset_duration": "1h",
       "request_max_limit": 100,
-      "request_reset_duration": "1m"
+      "request_reset_duration": "1m",
+      "ip_max_limit": 5,
+      "ip_reset_duration": "1h"
     },
     "is_active": true
   }'
@@ -129,6 +136,7 @@ curl -X POST http://localhost:8080/api/governance/virtual-keys \
         "reset_duration": "1M"
       }
     ],
+    "allowed_ips": ["10.0.0.0/24", "2001:db8::/32"],
     "is_active": true
   }'
 ```
@@ -200,7 +208,8 @@ curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}
           }
         ],
         "team_id": "team-eng-001",
-        "rate_limit_id": "rate-limit-eng-vk"
+        "rate_limit_id": "rate-limit-eng-vk",
+        "allowed_ips": ["10.0.0.0/24"]
       },
       {
         "id": "vk-002",
@@ -253,7 +262,9 @@ curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}
         "request_max_limit": 100,
         "request_reset_duration": "1m",
         "request_current_usage": 0,
-        "request_last_reset": "2025-01-01T00:00:00Z"
+        "request_last_reset": "2025-01-01T00:00:00Z",
+        "ip_max_limit": 5,
+        "ip_reset_duration": "1h"
       }
     ]
   }
@@ -287,6 +298,85 @@ curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
 ```
 
 Precedence is client setting, then the key, then the request's [project](/enterprise/projects#content-logging) when it has its own setting (Enterprise), then the `x-bf-disable-content-logging` header when per-request overrides are allowed. See [Content Logging](/features/observability/content-logging) for how each layer treats the log store and observability connectors.
+
+### Client IP controls
+
+A virtual key can constrain **where** its requests come from, with two independent controls:
+
+- **Allowed IPs** (`allowed_ips` on the key): when set, only requests whose client IP is a listed address or inside a listed CIDR block are served; every other client IP is refused with `403` and a generic reason that never names the list. Omitted leaves the rule off; an empty array denies every client IP.
+- **Maximum IPs** (`ip_max_limit` + `ip_reset_duration` on the key's rate limit): at most that many distinct client IPs per rolling reset window; the next distinct IP is refused with `429` until the window rolls. A repeated IP consumes no extra slot. Omitted leaves the window off.
+
+Both configured → both enforced independently: a listed IP still consumes a unique-IP slot and can be refused by the limit.
+
+The client IP is the leftmost `X-Forwarded-For` entry, else `X-Real-IP`, else the TCP peer. These headers are caller-controlled, so put Bifrost behind a trusted proxy that overwrites them before trusting the check — a caller can send any `X-Forwarded-For` it likes. When the IP cannot be resolved, the allowed list refuses the request (fail closed) and the unique-IP limit does not count it (fail open, other limits still enforced).
+
+Client-IP controls are virtual-key scoped only: team, customer, and provider-config rate limits reject `ip_max_limit`/`ip_reset_duration` with a `400`, and `allowed_ips` exists only on virtual keys. Enforcement never records an IP in the logs; log capture of client IPs follows `logs_store.capture_client_ip` on its own.
+
+<Tabs>
+<Tab title="Web UI">
+
+In the virtual key sheet, the rate-limiting block gains a **Maximum IPs** number-and-duration field, and an **Allowed IPs** textarea sits below it (one IP or CIDR per line, entries split on newlines and commas). The key's details sheet shows both values in the rate-limit block.
+
+</Tab>
+<Tab title="API">
+
+```bash
+# Create a key with both controls: an allowlist and a unique-IP limit
+curl -X POST http://localhost:8080/api/governance/virtual-keys \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "office-only",
+    "provider_configs": [{ "provider": "openai", "allowed_models": ["*"], "key_ids": ["*"] }],
+    "allowed_ips": ["10.0.0.0/24", "2001:db8::1"],
+    "rate_limit": {
+      "ip_max_limit": 5,
+      "ip_reset_duration": "1h"
+    }
+  }'
+
+# Update tri-state: omitting allowed_ips keeps the stored list, [] or null clears it
+curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
+  -H "Content-Type: application/json" \
+  -d '{ "allowed_ips": ["10.0.0.5"] }'
+
+# Clear the allowlist
+curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
+  -H "Content-Type: application/json" \
+  -d '{ "allowed_ips": null }'
+```
+
+Each entry is a single IPv4/IPv6 address or a CIDR block; anything else is rejected with `400`. Setting `ip_max_limit` without `ip_reset_duration` (and the reverse) is also rejected with `400`.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "governance": {
+    "virtual_keys": [
+      {
+        "id": "vk-office-only",
+        "name": "office-only",
+        "provider_configs": [{ "provider": "openai", "allowed_models": ["*"], "key_ids": ["*"] }],
+        "allowed_ips": ["10.0.0.0/24", "2001:db8::1"],
+        "rate_limit_id": "rl-office-only"
+      }
+    ],
+    "rate_limits": [
+      {
+        "id": "rl-office-only",
+        "ip_max_limit": 5,
+        "ip_reset_duration": "1h"
+      }
+    ]
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+Refusals follow the standard governance error shape: an unlisted IP returns `403` with `type: "access_blocked"` and the message `Client IP is not allowed for this virtual key`; a full unique-IP window returns `429` with `type: "rate_limited"` and a message naming the count, the maximum and the window (for example `ip limit exceeded (5/5 distinct client IPs, resets every 1h)`).
 
 ### Metadata per key
 
@@ -1164,6 +1254,17 @@ message. A client branching on the refusal reads `type`, not `error.type`.
   order and answers on the first that matches. The same type and shape covers an expired
   key (`virtual key has expired`) and an access profile that is inactive or expired.
 
+- Client IP Not Allowed (403), when the key has an `allowed_ips` list and the request's client IP is missing, unparseable, or not listed. The message never enumerates the list. See [Client IP controls](#client-ip-controls).
+```json
+{
+  "type": "access_blocked",
+  "status_code": 403,
+  "error": {
+    "message": "Client IP is not allowed for this virtual key"
+  }
+}
+```
+
 - Rate Limit Exceeded (429): `rate_limited`, or `token_limited` / `request_limited` for the dimension that ran out
 ```json
 {
@@ -1171,6 +1272,17 @@ message. A client branching on the refusal reads `type`, not `error.type`.
   "status_code": 429,
   "error": {
     "message": "Rate limit exceeded: rate limit violated for vk_model_config * : [token limit exceeded (1500/1000, resets every 1h)]"
+  }
+}
+```
+
+- Unique-IP Limit Exceeded (429), when the key's rate limit has `ip_max_limit` and a new distinct client IP arrives with the window full. See [Client IP controls](#client-ip-controls).
+```json
+{
+  "type": "rate_limited",
+  "status_code": 429,
+  "error": {
+    "message": "ip limit exceeded (5/5 distinct client IPs, resets every 1h)"
   }
 }
 ```

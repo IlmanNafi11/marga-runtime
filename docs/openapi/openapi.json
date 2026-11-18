@@ -152264,6 +152264,17 @@
           "rate_limit": {
             "$ref": "#/components/schemas/RateLimit"
           },
+          "allowed_ips": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "description": "The key's client-IP allowlist. When set, only requests whose client IP is a listed address or inside a listed CIDR block are served; every other client IP is refused with 403 and a generic reason that never names the list. Each entry is a single IPv4/IPv6 address or a CIDR block (e.g. \"10.0.0.5\", \"2001:db8::1\", \"10.0.0.0/24\"). Null leaves the rule off; an explicit empty array denies every client IP.\n",
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          },
           "assigned_user": {
             "type": [
               "object",
@@ -152898,6 +152909,14 @@
           "rate_limit": {
             "$ref": "#/components/schemas/CreateRateLimitRequest"
           },
+          "allowed_ips": {
+            "type": "array",
+            "description": "The key's client-IP allowlist, sent whole. Each entry is a single IPv4/IPv6 address or a CIDR block (e.g. \"10.0.0.5\", \"2001:db8::1\", \"10.0.0.0/24\"); entries are validated with 400 on anything else. Omitted leaves the rule off; an explicit empty array denies every client IP.\n",
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          },
           "is_active": {
             "type": "boolean"
           },
@@ -153150,6 +153169,17 @@
           },
           "rate_limit": {
             "$ref": "#/components/schemas/UpdateRateLimitRequest"
+          },
+          "allowed_ips": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "description": "Replaces the key's client-IP allowlist as a whole. Omit (or send null) to leave it unchanged; send [] to clear it and leave the rule off. Each entry is a single IPv4/IPv6 address or a CIDR block (e.g. \"10.0.0.5\", \"2001:db8::1\", \"10.0.0.0/24\"); entries are validated with 400 on anything else.\n",
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
           },
           "listed_models": {
             "type": [
@@ -153755,11 +153785,20 @@
             "type": "string",
             "format": "date-time"
           },
-          "config_hash": {
+          "ip_max_limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Client-IP limit. At most this many distinct client IPs per rolling ip_reset_duration window. Enforced only when the rate limit is held by a virtual key; on other holders the fields are accepted but never enforced."
+          },
+          "ip_reset_duration": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "Window for the client-IP counter (e.g. \"1m\", \"1h\", \"1d\"). Required when ip_max_limit is set."
           },
           "created_at": {
             "type": "string",
@@ -154099,8 +154138,14 @@
             "type": "integer",
             "format": "int64"
           },
-          "request_reset_duration": {
-            "type": "string"
+          "ip_max_limit": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Client-IP limit. At most this many distinct client IPs per rolling ip_reset_duration window. Virtual-key scoped only - team, customer and provider-config rate limits reject these fields with 400."
+          },
+          "ip_reset_duration": {
+            "type": "string",
+            "description": "Window for the client-IP counter (e.g. \"1m\", \"1h\", \"1d\"). Required when ip_max_limit is set."
           }
         }
       },
@@ -154119,8 +154164,20 @@
             "type": "integer",
             "format": "int64"
           },
-          "request_reset_duration": {
-            "type": "string"
+          "ip_max_limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Client-IP limit. At most this many distinct client IPs per rolling ip_reset_duration window. Null or omitted leaves the current value unchanged; 0 or a negative value is rejected. Virtual-key scoped only."
+          },
+          "ip_reset_duration": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Window for the client-IP counter (e.g. \"1m\", \"1h\", \"1d\"). Setting ip_max_limit without a duration is rejected with 400; clearing ip_max_limit also clears the duration."
           }
         }
       },
