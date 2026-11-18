@@ -78,11 +78,13 @@ Working agreement: `source .github/workflows/scripts/setup-go-workspace.sh` befo
 
 ## Phase 4: Documentation and full verification
 
-- [ ] **Task 7: Docs + full verification**
+- [x] **Task 7: Docs + full verification** — done, commit `2584501f8d`
   - Acceptance: virtual-keys/budget-and-limits/config-json docs describe the fields matching the schema; `docs/openapi/openapi.json` updated; changelog entry if convention applies.
-  - Verify: `go test ./framework/configstore/... ./plugins/governance/ ./transports/bifrost-http/lib/ ./transports/bifrost-http/handlers/`; `cd ui && npm run i18n:check && npm run build`; final report ends with the two operator handover commands.
-  - Files: docs + openapi + `plugins/governance/changelog.md`.
+  - Notes: OpenAPI fields added in the source `schemas/management/governance.yaml` (RateLimit, Create/UpdateRateLimitRequest, VirtualKey, Create/UpdateVirtualKeyRequest) and both bundles regenerated with `bundle.py`; `spec_invariants_test.py` 25 passed, 2 failed — both pre-existing at HEAD (`warp chat response contract`; `oauth_key_config` needs the missing `jsonschema` package), and regenerating the bundles actually fixed a pre-existing `openapi-oss.json` drift that fails on the pristine tree. VK doc: new "Client IP controls" section (both knobs, XFF/trusted-proxy warning, B9 fail-closed/fail-open, VK-only scoping, no IP in logs, UI/API/config.json tabs, refusal messages), two new entries in Error Responses, feature bullet, and the fields in the existing UI/API/config.json examples. budget-and-limits: unique-IP limit added to the rate-limit types. config-json guide: `allowed_ips` row in Virtual Key Fields, IP pair rows in Rate Limits, fields in the Full Governance Example. All governance `config.json` examples validate against `transports/config.schema.json` (one pre-existing failure in the Full Governance Example's `config_store` env-port block, reproduces on the pristine doc). Changelog skipped: `plugins/governance/changelog.md` holds only release-version chore lines, no per-feature convention.
+  - Verify: `go test ./framework/configstore/... ./plugins/governance/ ./transports/bifrost-http/lib/` green (29s/19s/82s); targeted `handlers` `TestVirtualKey|TestNonVirtualKeyHolders` green; `cd ui && npm run i18n:check` exit 0 (UI untouched since Task 5's full build+vitest run, not rerun).
+  - Files: `docs/openapi/schemas/management/governance.yaml`, `docs/openapi/openapi.json`, `docs/openapi/openapi-oss.json`, `docs/features/governance/virtual-keys.mdx`, `docs/features/governance/budget-and-limits.mdx`, `docs/deployment-guides/config-json/governance.mdx`.
   - Commit: `docs: virtual key ip controls`
+  - Verify: see above (UI build/vitest not rerun: no `ui/` change in this task).
 
 ## Checkpoint: Complete
 
