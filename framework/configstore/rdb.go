@@ -4717,6 +4717,15 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 		} else if virtualKey.ListedModels != nil {
 			columns = append(columns, "listed_models")
 		}
+		// allowed_ips follows the same shape: nil keeps the stored list, a non-nil list replaces it,
+		// and ClearAllowedIPs (set by the handler on null/[]) writes NULL so the rule goes off.
+		if virtualKey.ClearAllowedIPs {
+			row.AllowedIPs = nil
+			row.ClearAllowedIPs = false
+			columns = append(columns, "allowed_ips")
+		} else if virtualKey.AllowedIPs != nil {
+			columns = append(columns, "allowed_ips")
+		}
 		if err := txDB.WithContext(ctx).
 			Select(columns).
 			Updates(&row).Error; err != nil {

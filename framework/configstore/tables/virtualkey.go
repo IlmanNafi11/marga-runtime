@@ -309,6 +309,10 @@ type TableVirtualKey struct {
 	// list denies every client IP. Entries are stored verbatim — normalization happens at
 	// enforcement, never at storage.
 	AllowedIPs []string `gorm:"type:text;serializer:json" json:"allowed_ips,omitempty"`
+	// ClearAllowedIPs asks UpdateVirtualKey to write NULL to allowed_ips instead of keeping the
+	// stored list; the update tri-state needs the same distinguisher listed_models has, because
+	// nil alone already reads as "the caller did not send the field".
+	ClearAllowedIPs bool `gorm:"-" json:"-"`
 
 	// Relationships
 	Team      *TableTeam      `gorm:"foreignKey:TeamID" json:"team,omitempty"`

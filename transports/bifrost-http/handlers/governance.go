@@ -413,6 +413,10 @@ type CreateVirtualKeyRequest struct {
 	// allowed_models. Omitted leaves the feature off; [] lists nothing. See
 	// validateListedModelsBody for the rules each entry has to satisfy.
 	ListedModels []listedModelBody `json:"listed_models,omitempty"`
+	// AllowedIPs is the key's client-IP allowlist: when set, only listed IPs/CIDRs may use the key.
+	// Omitted leaves the rule off; entries must parse as an IP or a CIDR (see
+	// configstoreTables.ValidateAllowedIPs).
+	AllowedIPs []string `json:"allowed_ips,omitempty"`
 }
 
 // listedModelBody is one entry of a virtual key's listed_models block: a model on a provider, or a
@@ -493,6 +497,10 @@ type UpdateVirtualKeyRequest struct {
 	// null switches the block off, [] denies every model, and entries replace it. All four wire
 	// forms are distinguishable, so the field is presence-aware rather than a plain slice.
 	ListedModels schemas.OptionalJSON[[]listedModelBody] `json:"listed_models,omitempty"`
+	// AllowedIPs is tri-state on the wire: omitted leaves the key's list unchanged, null and []
+	// both clear the rule back off, and any other list replaces the stored one. Presence-aware for
+	// the same reason ListedModels is.
+	AllowedIPs schemas.OptionalJSON[[]string] `json:"allowed_ips,omitempty"`
 }
 
 var errVirtualKeyDualAssociation = errors.New("VirtualKey cannot be attached to more than one of Team, Customer or Business Unit")
@@ -622,6 +630,11 @@ type CreateRateLimitRequest struct {
 	TokenResetDuration   *string `json:"token_reset_duration,omitempty"`   // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
 	RequestMaxLimit      *int64  `json:"request_max_limit,omitempty"`      // Maximum requests allowed
 	RequestResetDuration *string `json:"request_reset_duration,omitempty"` // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
+	// Client-IP limits: at most IPMaxLimit distinct client IPs per rolling IPResetDuration window.
+	// Virtual-key scoped - only the VK create/update path stores them; the team, customer, model
+	// config and provider-config paths refuse them rather than storing a config never enforced.
+	IPMaxLimit      *int64  `json:"ip_max_limit,omitempty"`
+	IPResetDuration *string `json:"ip_reset_duration,omitempty"`
 }
 
 // UpdateRateLimitRequest represents the request body for updating a rate limit using flexible approach
@@ -630,6 +643,9 @@ type UpdateRateLimitRequest struct {
 	TokenResetDuration   *string `json:"token_reset_duration,omitempty"`   // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
 	RequestMaxLimit      *int64  `json:"request_max_limit,omitempty"`      // Maximum requests allowed
 	RequestResetDuration *string `json:"request_reset_duration,omitempty"` // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
+	// Same IP pair as CreateRateLimitRequest; see the note there.
+	IPMaxLimit      *int64  `json:"ip_max_limit,omitempty"`
+	IPResetDuration *string `json:"ip_reset_duration,omitempty"`
 }
 
 // teamUpdateSetsOwnLimits reports whether this update would leave the team with a budget or a rate
@@ -892,11 +908,18 @@ func applyRateLimitUpdate(rateLimit *configstoreTables.TableRateLimit, req *Upda
 	} else if req.RequestResetDuration != nil {
 		rateLimit.RequestResetDuration = req.RequestResetDuration
 	}
+	rateLimit.IPMaxLimit = req.IPMaxLimit
+	if req.IPMaxLimit == nil {
+		rateLimit.IPResetDuration = nil
+	} else if req.IPResetDuration != nil {
+		rateLimit.IPResetDuration = req.IPResetDuration
+	}
 }
 
 func isRateLimitRemovalRequest(req *UpdateRateLimitRequest) bool {
 	return req != nil && req.TokenMaxLimit == nil && req.RequestMaxLimit == nil &&
-		req.TokenResetDuration == nil && req.RequestResetDuration == nil
+		req.TokenResetDuration == nil && req.RequestResetDuration == nil &&
+		req.IPMaxLimit == nil && req.IPResetDuration == nil
 }
 
 // budgetUsageReset carries an operator's explicit "reset usage" choice through
@@ -1408,14 +1431,17 @@ func (h *GovernanceHandler) deleteVKModelConfig(ctx context.Context, tx *gorm.DB
 	return nil
 }
 
-// rateLimitFromRequestFields builds a transient TableRateLimit (limit/duration fields only)
-// for the VK governance sync, from the shared rate-limit request field shape.
-func rateLimitFromRequestFields(tokenMax *int64, tokenDur *string, reqMax *int64, reqDur *string) *configstoreTables.TableRateLimit {
+// rateLimitFromRequestFields builds a transient TableRateLimit (limit/duration fields only) from
+// the shared rate-limit request field shape. The IP pair rides along where the owner accepts it;
+// callers on a non-VK holder never pass one.
+func rateLimitFromRequestFields(tokenMax *int64, tokenDur *string, reqMax *int64, reqDur *string, ipMax *int64, ipDur *string) *configstoreTables.TableRateLimit {
 	return &configstoreTables.TableRateLimit{
 		TokenMaxLimit:        tokenMax,
 		TokenResetDuration:   tokenDur,
 		RequestMaxLimit:      reqMax,
 		RequestResetDuration: reqDur,
+		IPMaxLimit:           ipMax,
+		IPResetDuration:      ipDur,
 	}
 }
 
@@ -1807,6 +1833,48 @@ func collectProviderConfigDeleteIDs(
 		rateLimitIDs = append(rateLimitIDs, *config.RateLimitID)
 	}
 	return budgetIDs, rateLimitIDs
+}
+
+// The client-IP controls (ip_max_limit, ip_reset_duration, allowed_ips) are virtual-key scoped:
+// only a virtual key and a rate limit it holds are IP-checked. A team, customer, model-config or
+// provider-config body that carries them is refused instead of stored, because a stored config
+// nothing enforces is worse than a visible error (B5 of the IP-controls spec).
+
+// rejectCreateRateLimitIPFields refuses the IP pair on a holder that never enforces it.
+func rejectCreateRateLimitIPFields(holder string, rl *CreateRateLimitRequest) error {
+	if rl == nil {
+		return nil
+	}
+	if rl.IPMaxLimit != nil {
+		return fmt.Errorf("%s does not support ip_max_limit: client-IP controls are virtual-key only", holder)
+	}
+	if rl.IPResetDuration != nil {
+		return fmt.Errorf("%s does not support ip_reset_duration: client-IP controls are virtual-key only", holder)
+	}
+	return nil
+}
+
+// rejectUpdateRateLimitIPFields is rejectCreateRateLimitIPFields for the update form.
+func rejectUpdateRateLimitIPFields(holder string, rl *UpdateRateLimitRequest) error {
+	if rl == nil {
+		return nil
+	}
+	if rl.IPMaxLimit != nil {
+		return fmt.Errorf("%s does not support ip_max_limit: client-IP controls are virtual-key only", holder)
+	}
+	if rl.IPResetDuration != nil {
+		return fmt.Errorf("%s does not support ip_reset_duration: client-IP controls are virtual-key only", holder)
+	}
+	return nil
+}
+
+// rejectAllowedIPsField refuses a client-IP allowlist on a holder that has no such property.
+// raw is the undecoded field, so "sent as null" is refused too rather than read as absent.
+func rejectAllowedIPsField(holder string, raw json.RawMessage) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s does not support allowed_ips: client-IP controls are virtual-key only", holder)
 }
 
 // CreateTeamRequest represents the request body for creating a team
@@ -2472,6 +2540,24 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, err.Error())
 		return
 	}
+	if err := configstoreTables.ValidateAllowedIPs(req.AllowedIPs); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
+	if req.RateLimit != nil {
+		rl := configstoreTables.TableRateLimit{
+			TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
+			TokenResetDuration:   req.RateLimit.TokenResetDuration,
+			RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
+			RequestResetDuration: req.RateLimit.RequestResetDuration,
+			IPMaxLimit:           req.RateLimit.IPMaxLimit,
+			IPResetDuration:      req.RateLimit.IPResetDuration,
+		}
+		if err := validateRateLimit(&rl); err != nil {
+			SendError(ctx, 400, fmt.Sprintf("Invalid rate limit: %s", err.Error()))
+			return
+		}
+	}
 	createProviders := make([]string, 0, len(req.ProviderConfigs))
 	for _, pc := range req.ProviderConfigs {
 		createProviders = append(createProviders, pc.Provider)
@@ -2544,6 +2630,7 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 			DisableContentLogging: req.DisableContentLogging,
 			Metadata:              req.Metadata,
 			ListedModels:          listedModels,
+			AllowedIPs:            req.AllowedIPs,
 		}
 		if err := h.configStore.CreateVirtualKey(ctx, &vk, tx); err != nil {
 			return err
@@ -3068,6 +3155,16 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			// deny-every-model form. nil alone would read as "leave the stored block alone".
 			vk.ListedModels = listedModels
 			vk.ClearListedModels = req.ListedModels.Null
+		}
+		if req.AllowedIPs.Set {
+			// Null and [] both clear the rule, which BeforeSave stores as NULL; an update that
+			// omits the field leaves the stored list untouched.
+			if req.AllowedIPs.Null || len(req.AllowedIPs.Value) == 0 {
+				vk.AllowedIPs = nil
+				vk.ClearAllowedIPs = true
+			} else {
+				vk.AllowedIPs = req.AllowedIPs.Value
+			}
 		}
 		// VK top-level and per-provider budgets/rate-limits are stored in VK-scoped model
 		// configs (the single source of truth), written by syncVKGovernanceToModelConfigs
@@ -4531,6 +4628,18 @@ func validateRateLimit(rateLimit *configstoreTables.TableRateLimit) error {
 		}
 		if d, err := configstoreTables.ParseDuration(*rateLimit.RequestResetDuration); err != nil || d <= 0 {
 			return fmt.Errorf("invalid rate limit request reset duration (must be a positive duration): %s", *rateLimit.RequestResetDuration)
+		}
+	}
+	if rateLimit.IPMaxLimit != nil && (*rateLimit.IPMaxLimit < 0 || *rateLimit.IPMaxLimit == 0) {
+		return fmt.Errorf("ip_max_limit cannot be negative or zero: %d", *rateLimit.IPMaxLimit)
+	}
+	// Only require the IP reset duration if the IP limit is set.
+	if rateLimit.IPMaxLimit != nil {
+		if rateLimit.IPResetDuration == nil {
+			return fmt.Errorf("ip_reset_duration is required when ip_max_limit is set")
+		}
+		if d, err := configstoreTables.ParseDuration(*rateLimit.IPResetDuration); err != nil || d <= 0 {
+			return fmt.Errorf("invalid ip_reset_duration (must be a positive duration): %s", *rateLimit.IPResetDuration)
 		}
 	}
 	return nil
