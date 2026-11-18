@@ -6441,3 +6441,260 @@ func TestUpdateTeamNewBudgetStartsAtZero(t *testing.T) {
 		})
 	}
 }
+
+// ---- Virtual-key client-IP controls: API surface (SPEC B5) ----
+//
+// Both IP controls are virtual-key scoped. The VK create/update body accepts
+// rate_limit.ip_max_limit, rate_limit.ip_reset_duration and top-level allowed_ips; every
+// other holder that shares the rate-limit shape (team, customer, provider/model config)
+// refuses each field by name rather than storing a config enforcement would never read.
+
+func newVKIDCtx(vkID, body string) *fasthttp.RequestCtx {
+	ctx := newTestRequestCtx(body)
+	ctx.SetUserValue("vk_id", vkID)
+	return ctx
+}
+
+func TestVirtualKeyIPControls_CreatePersistsAndReadsBack(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+
+	createCtx := newTestRequestCtx(`{"name":"vk-ip-controls","rate_limit":{"ip_max_limit":5,"ip_reset_duration":"1h"},"allowed_ips":["10.0.0.0/24","2001:db8::1"]}`)
+	handler.createVirtualKey(createCtx)
+	require.Equal(t, fasthttp.StatusOK, createCtx.Response.StatusCode(), "create resp=%s", createCtx.Response.Body())
+	var created struct {
+		VirtualKey struct {
+			ID string `json:"id"`
+		} `json:"virtual_key"`
+	}
+	require.NoError(t, json.Unmarshal(createCtx.Response.Body(), &created))
+	require.NotEmpty(t, created.VirtualKey.ID)
+
+	stored, err := store.GetVirtualKey(context.Background(), created.VirtualKey.ID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"10.0.0.0/24", "2001:db8::1"}, stored.AllowedIPs, "the allowed list is stored as written")
+
+	getCtx := newTestRequestCtx("")
+	getCtx.SetUserValue("vk_id", created.VirtualKey.ID)
+	handler.getVirtualKey(getCtx)
+	require.Equal(t, fasthttp.StatusOK, getCtx.Response.StatusCode(), "get resp=%s", getCtx.Response.Body())
+	var fetched struct {
+		VirtualKey struct {
+			RateLimit *configstoreTables.TableRateLimit `json:"rate_limit"`
+		} `json:"virtual_key"`
+	}
+	require.NoError(t, json.Unmarshal(getCtx.Response.Body(), &fetched))
+	require.NotNil(t, fetched.VirtualKey.RateLimit, "the rate limit must be hydrated on read")
+	require.NotNil(t, fetched.VirtualKey.RateLimit.IPMaxLimit)
+	assert.Equal(t, int64(5), *fetched.VirtualKey.RateLimit.IPMaxLimit)
+	require.NotNil(t, fetched.VirtualKey.RateLimit.IPResetDuration)
+	assert.Equal(t, "1h", *fetched.VirtualKey.RateLimit.IPResetDuration)
+}
+
+func TestVirtualKeyIPControls_RejectsInvalidAllowedIPs(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"unparseable entry", `{"name":"vk","allowed_ips":["nonsense"]}`},
+		{"cidr out of range", `{"name":"vk","allowed_ips":["10.0.0.0/33"]}`},
+		{"empty entry", `{"name":"vk","allowed_ips":["10.0.0.1",""]}`},
+		{"untrimmed entry", `{"name":"vk","allowed_ips":[" 10.0.0.1"]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			store := setupPricingOverrideHandlerStore(t)
+			handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+			ctx := newTestRequestCtx(tc.body)
+			handler.createVirtualKey(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "resp=%s", ctx.Response.Body())
+			assert.Contains(t, string(ctx.Response.Body()), "allowed_ips", "the refusal must name the field")
+		})
+	}
+}
+
+func TestVirtualKeyIPControls_UpdateTriState(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+	ctx := context.Background()
+
+	createCtx := newTestRequestCtx(`{"name":"vk-ip-tri-state","allowed_ips":["10.0.0.1"]}`)
+	handler.createVirtualKey(createCtx)
+	require.Equal(t, fasthttp.StatusOK, createCtx.Response.StatusCode(), "create resp=%s", createCtx.Response.Body())
+	var created struct {
+		VirtualKey struct {
+			ID string `json:"id"`
+		} `json:"virtual_key"`
+	}
+	require.NoError(t, json.Unmarshal(createCtx.Response.Body(), &created))
+	vkID := created.VirtualKey.ID
+
+	putVK := func(t *testing.T, body string) {
+		t.Helper()
+		putCtx := newVKIDCtx(vkID, body)
+		handler.updateVirtualKey(putCtx)
+		require.Equal(t, fasthttp.StatusOK, putCtx.Response.StatusCode(), "PUT body=%s resp=%s", body, putCtx.Response.Body())
+	}
+	reload := func(t *testing.T) *configstoreTables.TableVirtualKey {
+		t.Helper()
+		stored, err := store.GetVirtualKey(ctx, vkID)
+		require.NoError(t, err)
+		return stored
+	}
+
+	putVK(t, `{"description":"touched"}`)
+	assert.Equal(t, []string{"10.0.0.1"}, reload(t).AllowedIPs, "an update that omits allowed_ips keeps the stored list")
+
+	putVK(t, `{"allowed_ips":["10.0.0.0/24","2001:db8::/32"]}`)
+	assert.Equal(t, []string{"10.0.0.0/24", "2001:db8::/32"}, reload(t).AllowedIPs, "a list replaces the stored one")
+
+	putVK(t, `{"allowed_ips":[]}`)
+	assert.Empty(t, reload(t).AllowedIPs, "an empty list clears the rule")
+
+	putVK(t, `{"allowed_ips":["10.0.0.1"]}`)
+	putVK(t, `{"allowed_ips":null}`)
+	assert.Empty(t, reload(t).AllowedIPs, "null clears the rule")
+
+	badCtx := newVKIDCtx(vkID, `{"allowed_ips":["nonsense"]}`)
+	handler.updateVirtualKey(badCtx)
+	require.Equal(t, fasthttp.StatusBadRequest, badCtx.Response.StatusCode(), "resp=%s", badCtx.Response.Body())
+	assert.Contains(t, string(badCtx.Response.Body()), "allowed_ips")
+}
+
+// TestVirtualKeyIPControls_RejectsInvalidIPRateLimit pins the validation shape the token/request
+// pairs already have: a maximum without its window, a non-positive maximum, or an unparsable
+// window is a 400 naming the field.
+func TestVirtualKeyIPControls_RejectsInvalidIPRateLimit(t *testing.T) {
+	for _, tc := range []struct{ name, body, field string }{
+		{"max without duration", `{"name":"vk","rate_limit":{"ip_max_limit":5}}`, "ip_reset_duration"},
+		{"zero max", `{"name":"vk","rate_limit":{"ip_max_limit":0,"ip_reset_duration":"1h"}}`, "ip_max_limit"},
+		{"negative max", `{"name":"vk","rate_limit":{"ip_max_limit":-1,"ip_reset_duration":"1h"}}`, "ip_max_limit"},
+		{"unparsable duration", `{"name":"vk","rate_limit":{"ip_max_limit":5,"ip_reset_duration":"nope"}}`, "ip_reset_duration"},
+		{"zero duration", `{"name":"vk","rate_limit":{"ip_max_limit":5,"ip_reset_duration":"0s"}}`, "ip_reset_duration"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			store := setupPricingOverrideHandlerStore(t)
+			handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+			ctx := newTestRequestCtx(tc.body)
+			handler.createVirtualKey(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "resp=%s", ctx.Response.Body())
+			assert.Contains(t, string(ctx.Response.Body()), tc.field, "the refusal must name the field")
+		})
+	}
+}
+
+// TestNonVirtualKeyHoldersRejectIPControlFields pins SPEC B5's holder gate: a rate limit gathered
+// for a non-VK holder is never IP-checked, so accepting these fields there would store config that
+// silently does nothing. Each holder answers 400 naming the offending field.
+func TestNonVirtualKeyHoldersRejectIPControlFields(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	t.Run("team create", func(t *testing.T) {
+		store := setupPricingOverrideHandlerStore(t)
+		handler := &GovernanceHandler{configStore: store, governanceManager: pricingOverrideTestGovernanceManager{}}
+		for _, tc := range []struct{ body, field string }{
+			{`{"name":"team","rate_limit":{"ip_max_limit":5,"ip_reset_duration":"1h"}}`, "ip_max_limit"},
+			{`{"name":"team","rate_limit":{"ip_reset_duration":"1h"}}`, "ip_reset_duration"},
+			{`{"name":"team","allowed_ips":["10.0.0.1"]}`, "allowed_ips"},
+		} {
+			ctx := newTestRequestCtx(tc.body)
+			handler.createTeam(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "body=%s resp=%s", tc.body, ctx.Response.Body())
+			assert.Contains(t, string(ctx.Response.Body()), tc.field, "body=%s", tc.body)
+		}
+	})
+
+	t.Run("team update", func(t *testing.T) {
+		store := setupPricingOverrideHandlerStore(t)
+		handler := &GovernanceHandler{configStore: store, governanceManager: pricingOverrideTestGovernanceManager{}}
+		for _, tc := range []struct{ body, field string }{
+			{`{"rate_limit":{"ip_max_limit":5,"ip_reset_duration":"1h"}}`, "ip_max_limit"},
+			{`{"allowed_ips":["10.0.0.1"]}`, "allowed_ips"},
+		} {
+			ctx := newGovernanceTeamIDCtx("no-such-team", tc.body)
+			handler.updateTeam(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "body=%s resp=%s", tc.body, ctx.Response.Body())
+			assert.Contains(t, string(ctx.Response.Body()), tc.field, "body=%s", tc.body)
+		}
+	})
+
+	t.Run("customer create", func(t *testing.T) {
+		store := newMockCustomerStore()
+		handler := &GovernanceHandler{configStore: store, governanceManager: &mockCustomerGovernanceManager{}}
+		for _, tc := range []struct{ body, field string }{
+			{`{"name":"cust","rate_limit":{"ip_max_limit":5,"ip_reset_duration":"1h"}}`, "ip_max_limit"},
+			{`{"name":"cust","allowed_ips":["10.0.0.1"]}`, "allowed_ips"},
+		} {
+			ctx := newTestRequestCtx(tc.body)
+			handler.createCustomer(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "body=%s resp=%s", tc.body, ctx.Response.Body())
+			assert.Contains(t, string(ctx.Response.Body()), tc.field, "body=%s", tc.body)
+		}
+	})
+
+	t.Run("customer update", func(t *testing.T) {
+		store := newMockCustomerStore()
+		handler := &GovernanceHandler{configStore: store, governanceManager: &mockCustomerGovernanceManager{}}
+		for _, tc := range []struct{ body, field string }{
+			{`{"rate_limit":{"ip_max_limit":5,"ip_reset_duration":"1h"}}`, "ip_max_limit"},
+			{`{"allowed_ips":["10.0.0.1"]}`, "allowed_ips"},
+		} {
+			ctx := newTestRequestCtx(tc.body)
+			ctx.SetUserValue("customer_id", "no-such-customer")
+			handler.updateCustomer(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "body=%s resp=%s", tc.body, ctx.Response.Body())
+			assert.Contains(t, string(ctx.Response.Body()), tc.field, "body=%s", tc.body)
+		}
+	})
+
+	t.Run("model config create", func(t *testing.T) {
+		store := setupPricingOverrideHandlerStore(t)
+		handler := &GovernanceHandler{configStore: store, governanceManager: &modelConfigTestGovernanceManager{store: store}}
+		for _, tc := range []struct{ body, field string }{
+			{`{"model_name":"gpt-4o","rate_limit":{"ip_max_limit":5,"ip_reset_duration":"1h"}}`, "ip_max_limit"},
+			{`{"model_name":"gpt-4o","allowed_ips":["10.0.0.1"]}`, "allowed_ips"},
+		} {
+			ctx := newTestRequestCtx(tc.body)
+			handler.createModelConfig(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "body=%s resp=%s", tc.body, ctx.Response.Body())
+			assert.Contains(t, string(ctx.Response.Body()), tc.field, "body=%s", tc.body)
+		}
+	})
+
+	t.Run("model config update", func(t *testing.T) {
+		store := setupPricingOverrideHandlerStore(t)
+		handler := &GovernanceHandler{configStore: store, governanceManager: &modelConfigTestGovernanceManager{store: store}}
+		createCtx := newTestRequestCtx(`{"model_name":"gpt-4o"}`)
+		handler.createModelConfig(createCtx)
+		require.Equal(t, fasthttp.StatusOK, createCtx.Response.StatusCode(), "create resp=%s", createCtx.Response.Body())
+		var created struct {
+			ModelConfig struct {
+				ID string `json:"id"`
+			} `json:"model_config"`
+		}
+		require.NoError(t, json.Unmarshal(createCtx.Response.Body(), &created))
+		for _, tc := range []struct{ body, field string }{
+			{`{"rate_limit":{"ip_max_limit":5,"ip_reset_duration":"1h"}}`, "ip_max_limit"},
+			{`{"allowed_ips":["10.0.0.1"]}`, "allowed_ips"},
+		} {
+			ctx := newTestRequestCtx(tc.body)
+			ctx.SetUserValue("mc_id", created.ModelConfig.ID)
+			handler.updateModelConfig(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "body=%s resp=%s", tc.body, ctx.Response.Body())
+			assert.Contains(t, string(ctx.Response.Body()), tc.field, "body=%s", tc.body)
+		}
+	})
+
+	t.Run("virtual key provider config", func(t *testing.T) {
+		store := setupPricingOverrideHandlerStore(t)
+		handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+		for _, tc := range []struct{ body, field string }{
+			{`{"name":"vk","provider_configs":[{"provider":"openai","rate_limit":{"ip_max_limit":5,"ip_reset_duration":"1h"}}]}`, "ip_max_limit"},
+		} {
+			ctx := newTestRequestCtx(tc.body)
+			handler.createVirtualKey(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "body=%s resp=%s", tc.body, ctx.Response.Body())
+			assert.Contains(t, string(ctx.Response.Body()), tc.field, "body=%s", tc.body)
+		}
+	})
+}
