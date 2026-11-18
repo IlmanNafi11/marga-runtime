@@ -296,6 +296,9 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 			DisableAutoToolInject: &s.Config.ClientConfig.MCPDisableAutoToolInject,
 
 			ObjectOwnershipEnforced: s.Config.ShouldEnforceVKObjectOwnership,
+			// Keep the capture gate in step with the keys that actually enforce an IP, so a
+			// deployment with log capture off still records the IP those keys need (B12).
+			ClientIPControlsChanged: s.Config.SetEnforceClientIP,
 		}
 		s.registerPluginWithStatus(ctx, governance.PluginName, nil, config, false)
 	} else {

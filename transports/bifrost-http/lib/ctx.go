@@ -870,7 +870,11 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	bifrostCtx.SetValue(schemas.BifrostContextKeyRequestHeaders, allHeaders)
 
 	// Same order as enterprise audit logs: the forwarding headers first, then the TCP peer.
-	if store != nil && store.ShouldCaptureClientIP() {
+	// Log capture is not the only reason to resolve the IP: a virtual key that enforces an
+	// allowed-IP list or a unique-IP limit cannot evaluate without it, so enforcement needs
+	// the value too. The logging plugin keeps following capture alone — enforcement never
+	// persists an IP (B12).
+	if store != nil && (store.ShouldCaptureClientIP() || store.ShouldEnforceClientIP()) {
 		if clientIP := ClientForwardedIP(ctx); clientIP != "" {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyClientIP, clientIP)
 		} else if ip := ctx.RemoteIP(); ip != nil && !ip.IsUnspecified() {

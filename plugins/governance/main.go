@@ -88,6 +88,12 @@ type Config struct {
 	DisableAutoToolInject *bool     `json:"disable_auto_tool_inject"`
 	// Reports the live client.enforce_vk_object_ownership; nil means on
 	ObjectOwnershipEnforced func() bool `json:"-"`
+	// Receives whether any loaded virtual key carries an IP control (allowed list or
+	// unique-IP limit), after every change and once at startup. The HTTP transport wires
+	// this to its capture gate so requests carry the client IP exactly when a key needs
+	// it, whether or not log capture is on; nil means nobody is listening. Never
+	// serialized.
+	ClientIPControlsChanged func(bool) `json:"-"`
 }
 
 type InMemoryStore interface {
@@ -299,7 +305,25 @@ func Init(
 
 		objectOwnershipEnforcedFn: objectOwnershipEnforcedFn,
 	}
+	// Publish the store's IP-control state to the transport's capture gate now (the store was
+	// seeded before this plugin existed: boot, a config.json sync, or a rebuild) and on every
+	// later change (B12).
+	registerClientIPControlsHook(governanceStore, config)
 	return plugin, nil
+}
+
+// registerClientIPControlsHook wires the store's IP-control flag to the configured callback,
+// when the store exposes it. A Store implementation that does not (a wrapper, an enterprise
+// store) leaves the transport's gate on its own default rather than failing startup.
+func registerClientIPControlsHook(store GovernanceStore, config *Config) {
+	if config == nil || config.ClientIPControlsChanged == nil {
+		return
+	}
+	notifier, ok := store.(interface{ SetClientIPControlsHook(func(bool)) })
+	if !ok {
+		return
+	}
+	notifier.SetClientIPControlsHook(config.ClientIPControlsChanged)
 }
 
 // InitFromStore initializes and returns a governance plugin instance with a custom store.
@@ -369,6 +393,7 @@ func InitFromStore(
 
 		objectOwnershipEnforcedFn: objectOwnershipEnforcedFn,
 	}
+	registerClientIPControlsHook(governanceStore, config)
 	return plugin, nil
 }
 

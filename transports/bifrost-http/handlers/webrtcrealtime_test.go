@@ -135,6 +135,7 @@ func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool           { re
 func (s testHandlerStore) ShouldAllowDirectKeys() bool                      { return false }
 func (s testHandlerStore) ShouldSendExtraFieldsInHeaders() bool             { return false }
 func (s testHandlerStore) ShouldCaptureClientIP() bool                      { return false }
+func (s testHandlerStore) ShouldEnforceClientIP() bool                      { return false }
 func (s testHandlerStore) IsProviderConfigured(schemas.ModelProvider) bool  { return false }
 func (s testHandlerStore) GetMCPExternalServerURL() string                  { return "" }
 func (s testHandlerStore) GetMCPExternalClientURL() string                  { return "" }

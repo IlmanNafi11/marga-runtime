@@ -41,6 +41,7 @@ type testHandlerStore struct {
 	allowDirectKeys      bool
 	extraFieldsInHeaders bool
 	captureClientIP      bool
+	enforceClientIP      bool
 }
 
 func (s testHandlerStore) GetHeaderMatcher() *HeaderMatcher                      { return s.matcher }
@@ -57,6 +58,7 @@ func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool          { ret
 func (s testHandlerStore) ShouldAllowDirectKeys() bool                     { return s.allowDirectKeys }
 func (s testHandlerStore) ShouldSendExtraFieldsInHeaders() bool            { return s.extraFieldsInHeaders }
 func (s testHandlerStore) ShouldCaptureClientIP() bool                     { return s.captureClientIP }
+func (s testHandlerStore) ShouldEnforceClientIP() bool                     { return s.enforceClientIP }
 func (s testHandlerStore) IsProviderConfigured(schemas.ModelProvider) bool { return false }
 func (s testHandlerStore) GetMCPExternalServerURL() string                 { return "" }
 func (s testHandlerStore) GetMCPExternalClientURL() string                 { return "" }
@@ -158,6 +160,55 @@ func TestConvertToBifrostContext_ClientIPOffByDefault(t *testing.T) {
 	}
 	if !(&Config{LogsStoreConfig: &logstore.Config{CaptureClientIP: true}}).ShouldCaptureClientIP() || (&Config{}).ShouldCaptureClientIP() {
 		t.Error("ShouldCaptureClientIP must follow logs_store.capture_client_ip")
+	}
+}
+
+
+// TestConvertToBifrostContext_ClientIPForEnforcement pins B12: the caller's IP reaches the
+// context when IP enforcement needs it even though log capture is off, and is still absent when
+// both are off. Without it, a virtual key with an allowed-IP list or a unique-IP limit would see
+// no IP at all under a deployment that does not log IPs.
+func TestConvertToBifrostContext_ClientIPForEnforcement(t *testing.T) {
+	cases := []struct {
+		name         string
+		capture      bool
+		enforce      bool
+		headers      map[string]string
+		wantClientIP string
+	}{
+		{name: "enforcement on, capture off", enforce: true, headers: map[string]string{"X-Forwarded-For": "203.0.113.7"}, wantClientIP: "203.0.113.7"},
+		{name: "enforcement on, capture on", capture: true, enforce: true, headers: map[string]string{"X-Forwarded-For": "203.0.113.8"}, wantClientIP: "203.0.113.8"},
+		{name: "enforcement on, capture off, peer fallback", enforce: true, wantClientIP: "10.1.2.3"},
+		{name: "both off", wantClientIP: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.SetRemoteAddr(&net.TCPAddr{IP: net.ParseIP("10.1.2.3"), Port: 5000})
+			for k, v := range tc.headers {
+				ctx.Request.Header.Set(k, v)
+			}
+			bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{captureClientIP: tc.capture, enforceClientIP: tc.enforce})
+			defer cancel()
+			got, _ := bifrostCtx.Value(schemas.BifrostContextKeyClientIP).(string)
+			if got != tc.wantClientIP {
+				t.Fatalf("client ip = %q, want %q", got, tc.wantClientIP)
+			}
+		})
+	}
+
+	// The config-backed store answers from the atomic flag, independent of log capture.
+	c := &Config{}
+	if c.ShouldEnforceClientIP() {
+		t.Fatal("enforcement must default to off")
+	}
+	c.SetEnforceClientIP(true)
+	if !c.ShouldEnforceClientIP() {
+		t.Fatal("SetEnforceClientIP(true) must be visible to ShouldEnforceClientIP")
+	}
+	c.SetEnforceClientIP(false)
+	if c.ShouldEnforceClientIP() {
+		t.Fatal("SetEnforceClientIP(false) must be visible to ShouldEnforceClientIP")
 	}
 }
 

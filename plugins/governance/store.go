@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -64,6 +65,20 @@ type LocalGovernanceStore struct {
 	// ipWindows holds each rate limit's rolling set of admitted client IPs, keyed by
 	// rate-limit row ID. See ipWindows for why the set lives here and not on the context.
 	ipWindows ipWindows
+	// clientIPControls reports whether any in-memory virtual key carries an IP control —
+	// a configured allowed_ips list or a top-level rate limit with an IP max. The transport's
+	// capture gate reads the flag this backs, so a deployment that does not log IPs still
+	// resolves the caller's address for keys that enforce on it (B12).
+	clientIPControls atomic.Bool
+	// ipLimitedVKs counts the keys whose own rate limit carries an ip_max_limit. Kept beside
+	// clientIPControls so a write path answers "did the enforcement set change?" in O(1) instead
+	// of rescanning every key — a per-write rescan made config loading O(n²).
+	ipLimitedVKs atomic.Int64
+	// clientIPControlsHook, when set, receives the flag's value after every change, plus
+	// once at registration with the current state. The transport wires it to the capture
+	// gate's atomic bool; a nil hook means nobody is listening and nothing is published.
+	clientIPControlsHook func(bool)
+	clientIPControlsMu   sync.Mutex
 
 	// Last DB usages for budgets and rate limits
 	LastDBUsagesBudgetsMu            sync.RWMutex       // Last DB usages for budgets
@@ -377,6 +392,109 @@ func (gs *LocalGovernanceStore) SetResetHooks(onBudgetsReset func([]*configstore
 	gs.onRateLimitsReset = onRateLimitsReset
 }
 
+// SetClientIPControlsHook registers the callback that receives the client-IP-controls flag after
+// every change, plus the current value once, so a listener attached after the store was seeded
+// (boot, a config.json sync, a plugin rebuild) starts from the truth instead of a stale default.
+// A nil callback unregisters; nothing is published to a nil hook.
+func (gs *LocalGovernanceStore) SetClientIPControlsHook(hook func(bool)) {
+	gs.clientIPControlsMu.Lock()
+	gs.clientIPControlsHook = hook
+	gs.clientIPControlsMu.Unlock()
+	if hook != nil {
+		hook(gs.HasClientIPControls())
+	}
+}
+
+// HasClientIPControls reports whether any loaded virtual key carries an IP control: a configured
+// allowed_ips list (an explicit empty list included — it denies every IP) or a top-level rate
+// limit with ip_max_limit set. It is the value behind the transport's capture gate, which is the
+// only reason the type that owns the data, rather than the transport, answers it.
+func (gs *LocalGovernanceStore) HasClientIPControls() bool {
+	return gs.clientIPControls.Load()
+}
+
+// setAndPublishClientIPControls stores the next flag value and pushes it to the hook on a real
+// transition. The compare lives here so callers cannot store-then-skip (a Store before a Swap of
+// the same value never looks like a change).
+func (gs *LocalGovernanceStore) setAndPublishClientIPControls(next bool) {
+	prev := gs.clientIPControls.Swap(next)
+	if prev == next {
+		return
+	}
+	gs.clientIPControlsMu.Lock()
+	hook := gs.clientIPControlsHook
+	gs.clientIPControlsMu.Unlock()
+	if hook != nil {
+		hook(next)
+	}
+}
+
+// publishAfterAllowedListChange recomputes the flag from the two O(1) counters — keys carrying
+// an allowed list, keys carrying an ip_max_limit — and publishes it on a transition. Called
+// wherever a key's allowed list is installed or dropped.
+func (gs *LocalGovernanceStore) publishAfterAllowedListChange() {
+	gs.setAndPublishClientIPControls(gs.allowedIPLists.present.Load() > 0 || gs.ipLimitedVKs.Load() > 0)
+}
+
+// refreshClientIPControls recomputes both answers from scratch. Only the rebuild paths call it:
+// they replace every entry at once, so incremental accounting cannot follow them. Per-key write
+// paths use vkIPLimitDelta instead — a rescan per write would make config loading O(n²) and hang
+// a large deployment (pinned by TestBudgetResetAccuracyAt100kKeysAllDue).
+func (gs *LocalGovernanceStore) refreshClientIPControls() {
+	ipLimited := int64(0)
+	gs.virtualKeys.Range(func(_, value any) bool {
+		vk, ok := value.(*configstoreTables.TableVirtualKey)
+		if !ok || vk == nil || vk.RateLimitID == nil {
+			return true
+		}
+		limit := gs.LoadRateLimit(context.Background(), *vk.RateLimitID)
+		if limit != nil && limit.IPMaxLimit != nil {
+			ipLimited++
+		}
+		return true
+	})
+	gs.ipLimitedVKs.Store(ipLimited)
+	gs.setAndPublishClientIPControls(gs.allowedIPLists.any() || ipLimited > 0)
+}
+
+// vkIPLimitDelta records that a key gained (delta +1) or lost (delta -1) a top-level rate limit
+// carrying an ip_max_limit, then publishes the flag. A key registered under several value aliases
+// is still one key, so callers pass each row once rather than once per alias.
+func (gs *LocalGovernanceStore) vkIPLimitDelta(delta int64) {
+	if delta == 0 {
+		return
+	}
+	after := gs.ipLimitedVKs.Add(delta)
+	if after < 0 {
+		// A lost delta without its matching gain is a caller bug, not an enforcement state:
+		// clamp so the count cannot go negative and resynchronize from the real entries.
+		gs.ipLimitedVKs.Store(0)
+		gs.refreshClientIPControls()
+		return
+	}
+	gs.setAndPublishClientIPControls(gs.allowedIPLists.any() || after > 0)
+}
+
+// virtualKeyGainedIPLimit is the +1 half of vkIPLimitDelta: the key is new with an ip_max_limit,
+// or its rate limit just gained one.
+func (gs *LocalGovernanceStore) virtualKeyGainedIPLimit() { gs.vkIPLimitDelta(1) }
+
+// virtualKeyLostIPLimit is the -1 half of vkIPLimitDelta: the key stopped carrying an
+// ip_max_limit — the limit was cleared — or the key was deleted.
+func (gs *LocalGovernanceStore) virtualKeyLostIPLimit() { gs.vkIPLimitDelta(-1) }
+
+// refreshClientIPControlsIfIPLimitTouched refreshes the flag from the keys after a rate-limit
+// row changed, but only when the change could matter: a row carrying ip fields may have crossed
+// a key's top-level reference, and with the flag on, any row change could be the one an
+// IP-limited key points at. A row that never carried IP fields while the flag is off cannot turn
+// it on, so that common case costs one nil check (B12).
+func (gs *LocalGovernanceStore) refreshClientIPControlsIfIPLimitTouched(row *configstoreTables.TableRateLimit) {
+	if (row == nil || row.IPMaxLimit == nil) && !gs.clientIPControls.Load() {
+		return
+	}
+	gs.refreshClientIPControls()
+}
+
 func (gs *LocalGovernanceStore) getBudgetsResetHook() func([]*configstoreTables.TableBudget) {
 	gs.resetHooksMu.RLock()
 	defer gs.resetHooksMu.RUnlock()
@@ -578,6 +696,7 @@ func (gs *LocalGovernanceStore) UpsertRateLimitConfig(ctx context.Context, rateL
 		if !exists {
 			if _, loaded := gs.rateLimits.LoadOrStore(rateLimitID, config); !loaded {
 				gs.ipWindows.reconcile(rateLimitID, config)
+				gs.refreshClientIPControlsIfIPLimitTouched(config)
 				return
 			}
 			continue
@@ -586,6 +705,7 @@ func (gs *LocalGovernanceStore) UpsertRateLimitConfig(ctx context.Context, rateL
 		if !ok || old == nil {
 			gs.rateLimits.Store(rateLimitID, config)
 			gs.ipWindows.reconcile(rateLimitID, config)
+			gs.refreshClientIPControlsIfIPLimitTouched(config)
 			return
 		}
 		merged := *config
@@ -595,6 +715,7 @@ func (gs *LocalGovernanceStore) UpsertRateLimitConfig(ctx context.Context, rateL
 		merged.RequestLastReset = old.RequestLastReset
 		if gs.rateLimits.CompareAndSwap(rateLimitID, raw, &merged) {
 			gs.ipWindows.reconcile(rateLimitID, &merged)
+			gs.refreshClientIPControlsIfIPLimitTouched(&merged)
 			return
 		}
 	}
@@ -602,8 +723,12 @@ func (gs *LocalGovernanceStore) UpsertRateLimitConfig(ctx context.Context, rateL
 
 // DeleteRateLimit deletes a rate limit from the local store.
 func (gs *LocalGovernanceStore) DeleteRateLimit(ctx context.Context, rateLimitID string) {
+	// A deleted row may have been the one an IP-limited key pointed at, which only shows up in
+	// the keys, so refresh from them. A row without an IP limit cannot change the answer.
+	old := gs.LoadRateLimit(ctx, rateLimitID)
 	gs.rateLimits.Delete(rateLimitID)
 	gs.ipWindows.drop(rateLimitID)
+	gs.refreshClientIPControlsIfIPLimitTouched(old)
 	gs.LastDBUsagesRateLimitsTokensMu.Lock()
 	delete(gs.LastDBUsagesTokensRateLimits, rateLimitID)
 	gs.LastDBUsagesRateLimitsTokensMu.Unlock()
@@ -2164,6 +2289,10 @@ func (gs *LocalGovernanceStore) storeVirtualKey(value string, vk *configstoreTab
 	// key now carries none. Cached under the row ID, so both value aliases see it.
 	if vk != nil && vk.ID != "" {
 		gs.allowedIPLists.storeEntries(vk.ID, vk.AllowedIPs)
+	}
+	// Installing or dropping a list changes the allowed-list count (B12).
+	if vk != nil && vk.ID != "" {
+		gs.publishAfterAllowedListChange()
 	}
 	gs.virtualKeys.Store(value, vk)
 	if vk != nil && vk.ID != "" {
@@ -3741,6 +3870,9 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 	}
 	gs.LastDBUsagesRateLimitsTokensMu.Unlock()
 	gs.LastDBUsagesRateLimitsRequestsMu.Unlock()
+	// A rebuild replaces every entry at once, so the incremental deltas above cannot follow it
+	// (the allowlist cache was cleared wholesale). Recompute both answers from the new entries.
+	gs.refreshClientIPControls()
 }
 
 // limitIDsOf names the limits of several lists as one deduplicated list of identifiers, in the order
@@ -3908,6 +4040,9 @@ func (gs *LocalGovernanceStore) createVirtualKeyLocked(ctx context.Context, vk *
 	if clone.RateLimit != nil {
 		clone.RateLimit.IsCalendarAligned = clone.CalendarAligned
 		gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
+		if clone.RateLimit.IPMaxLimit != nil {
+			gs.virtualKeyGainedIPLimit()
+		}
 	}
 
 	// Create provider config budgets and rate limits if they exist
@@ -4020,6 +4155,13 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 			// and its stale usage pollutes gossip baselines.
 			if existingVK.RateLimit != nil && existingVK.RateLimit.ID != clone.RateLimit.ID {
 				gs.DeleteRateLimit(ctx, existingVK.RateLimit.ID)
+			}
+			// Track whether the key's own limit now carries an ip_max_limit it did not before
+			// (or the reverse), so the capture gate follows without a rescan (B12, B14).
+			if clone.RateLimit.IPMaxLimit != nil && (existingVK.RateLimit == nil || existingVK.RateLimit.IPMaxLimit == nil) {
+				gs.virtualKeyGainedIPLimit()
+			} else if clone.RateLimit.IPMaxLimit == nil && existingVK.RateLimit != nil && existingVK.RateLimit.IPMaxLimit != nil {
+				gs.virtualKeyLostIPLimit()
 			}
 		} else if existingVK.RateLimit != nil {
 			// Rate limit was removed from the virtual key, delete it from memory
@@ -4157,6 +4299,9 @@ func (gs *LocalGovernanceStore) DeleteVirtualKeyInMemory(ctx context.Context, vk
 			if vk.RateLimitID != nil {
 				gs.DeleteRateLimit(ctx, *vk.RateLimitID)
 			}
+			if vk.RateLimit != nil && vk.RateLimit.IPMaxLimit != nil {
+				gs.virtualKeyLostIPLimit()
+			}
 
 			// Delete provider config budgets and rate limits
 			if vk.ProviderConfigs != nil {
@@ -4188,6 +4333,9 @@ func (gs *LocalGovernanceStore) DeleteVirtualKeyInMemory(ctx context.Context, vk
 	// Drop the key's compiled allowlist whether or not its row was still registered: like
 	// the model-config eviction below, this must not depend on finding the entry.
 	gs.allowedIPLists.delete(vkID)
+	// The deleted key may have been the last one carrying a list (its IP-limit delta was
+	// applied above); recompute from the counters here (B12).
+	gs.publishAfterAllowedListChange()
 
 	// Evict any model configs scoped to this virtual key (and their budgets/rate-limits).
 	// Mirrors the DB-side cleanup in DeleteVirtualKey and keeps the in-memory store

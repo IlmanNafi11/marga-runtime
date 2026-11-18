@@ -103,6 +103,10 @@ type HandlerStore interface {
 	ShouldSendExtraFieldsInHeaders() bool
 	// ShouldCaptureClientIP returns whether request logs record the caller's IP (logs_store.capture_client_ip)
 	ShouldCaptureClientIP() bool
+	// ShouldEnforceClientIP returns whether any loaded virtual key enforces an IP control
+	// (allowed list or unique-IP limit). Requests then carry the client IP in their context
+	// even when log capture is off, so the governance gate can evaluate it.
+	ShouldEnforceClientIP() bool
 	// IsProviderConfigured reports whether provider has a configuration on this gateway
 	IsProviderConfigured(provider schemas.ModelProvider) bool
 	// GetCustomProviderPassthrough returns a custom provider's base provider type and whether it
@@ -804,6 +808,11 @@ type Config struct {
 	OAuthProvider           *oauth2.OAuth2Provider
 	OAuthTokenRefreshWorker *oauth2.OAuthTokenRefreshWorker
 	OAuthSweepWorker        *oauth2.PerUserOAuthSweepWorker
+	// enforceClientIP mirrors the governance store's answer to "does any loaded virtual key
+	// enforce an IP control?" (allowed list or unique-IP limit). The governance plugin pushes
+	// every change through Config.SetEnforceClientIP; ConvertToBifrostContext reads it once per
+	// request to decide whether the caller's IP belongs in the context (B12).
+	enforceClientIP atomic.Bool
 
 	// MCPHeadersProvider backs MCPAuthTypePerUserHeaders credential storage.
 	// Constructed alongside OAuthProvider and passed into the Bifrost core
@@ -8630,6 +8639,21 @@ func (c *Config) ShouldSendExtraFieldsInHeaders() bool {
 // ShouldCaptureClientIP returns whether request logs record client_ip; LogsStoreConfig is only set at startup.
 func (c *Config) ShouldCaptureClientIP() bool {
 	return c.LogsStoreConfig != nil && c.LogsStoreConfig.CaptureClientIP
+}
+
+// ShouldEnforceClientIP returns whether any loaded virtual key enforces an IP control (an
+// allowed-IP list or a unique-IP limit). When true, ConvertToBifrostContext resolves the
+// caller's IP into the request context even with log capture off, so governance can enforce
+// against it (B12). Backed by an atomic bool the governance plugin keeps current.
+func (c *Config) ShouldEnforceClientIP() bool {
+	return c.enforceClientIP.Load()
+}
+
+// SetEnforceClientIP publishes a new client-IP-enforcement answer. Called by the governance
+// plugin's store hook, never from config parsing: the flag has no config.json spelling, it is
+// derived from the loaded keys.
+func (c *Config) SetEnforceClientIP(v bool) {
+	c.enforceClientIP.Store(v)
 }
 
 // ShouldAllowDirectKeys returns whether callers may bypass the registered key pool via x-bf-direct-key header.
