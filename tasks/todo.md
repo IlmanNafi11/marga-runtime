@@ -14,10 +14,9 @@ Working agreement: `source .github/workflows/scripts/setup-go-workspace.sh` befo
   - Files: `framework/configstore/tables/ratelimit.go`, `tables/virtualkey.go`, `framework/configstore/clientconfig.go`, `framework/configstore/migrations.go`; tests in new `tables/ratelimit_test.go` + existing `tables/virtualkey_test.go` + clientconfig tests.
   - Commit: `feat(governance): add ip limit fields to rate limits and allowed-ips to virtual keys`
 
-- [ ] **Task 2: config.json schema, HTTP API, holder-kind gate**
-  - Acceptance: schema (`$defs/rate_limit_line` at :13804, `rate_limits` + `virtual_keys` items by name) gains the IP pair and `allowed_ips`; VK create persists all three fields; `allowed_ips: ["nonsense"]` → 400; update tri-state keeps on absent, clears on `[]`/null; team, customer, provider-config, **and VK provider-config** bodies carrying IP fields → 400 naming the field.
-  - Verify: `go test ./transports/bifrost-http/handlers/ -run 'TestVirtualKey|TestTeam'` (red → green); `go build ./bifrost-http/handlers/`.
-  - Files: `transports/config.schema.json`, `handlers/governance.go` (:371, :449, :620, :628, `applyRateLimitUpdate`, VK rate-limit creation sites); tests: `handlers/governance_test.go`, `governanceroutes_test.go`.
+- [x] **Task 2: config.json schema, HTTP API, holder-kind gate** — done, commits `f25facc33` (schema + VK fields), `7e1b5ee8b` (holder gate + sync paths), `6f9d26baf` (tests)
+  - Notes: schema blocks updated by name (`rate_limit_line`, top-level `rate_limits` items, `virtual_keys` items); `allowed_ips` is `schemas.OptionalJSON[[]string]` tri-state on update, null/[] both clear (stored as NULL via `ClearAllowedIPs`, mirroring `ClearListedModels`); holder gate refuses the fields by name on team/customer/model-config/provider-governance create+update AND on the VK's own provider_configs/model_budgets tiers; VK create/update pre-validate the rate limit before the transaction so a bad pair is a 400, not a 500; `rateLimitFromRequestFields` gained the IP pair (nil-nil at non-VK tiers, `req.RateLimit.IP*` at the top level); `TestConfigSchemaSync` green.
+  - Verify: `/tmp/handlers.test -test.run 'TestVirtualKeyIPControls|TestNonVirtualKeyHoldersRejectIPControlFields'` red → green (5/5); full handlers suite green except 29 pre-existing BifrostMCP/ClaudeCodeGateway failures that reproduce on a clean checkout of the parent commit (spec path + tmpfs-disk-full artifacts of this environment, unrelated to this change).
   - Commit: `feat(governance): expose ip limit and allowed-ips on virtual key api`
 
 ## Checkpoint 1 — contract frozen
