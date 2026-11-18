@@ -321,15 +321,21 @@ export default function VirtualKeyDetailSheet({
 								</div>
 							)}
 
-							{virtualKey.allowed_ips && virtualKey.allowed_ips.length > 0 && (
+							{virtualKey.allowed_ips !== null && virtualKey.allowed_ips !== undefined && (
 								<div className="grid grid-cols-1 items-center gap-4 md:grid-cols-3">
 									<span className="text-muted-foreground text-sm">{t("virtualKeys.allowedIPs")}</span>
 									<div className="col-span-2 flex flex-wrap gap-1.5">
-										{virtualKey.allowed_ips.map((ip) => (
-											<Badge key={ip} variant="secondary" className="font-mono text-xs">
-												{ip}
+										{virtualKey.allowed_ips.length === 0 ? (
+											<Badge variant="destructive" className="font-mono text-xs">
+												{t("virtualKeys.allowedIPsDenyAll")}
 											</Badge>
-										))}
+										) : (
+											virtualKey.allowed_ips.map((ip) => (
+												<Badge key={ip} variant="secondary" className="font-mono text-xs">
+													{ip}
+												</Badge>
+											))
+										)}
 									</div>
 								</div>
 							)}

@@ -310,6 +310,8 @@ Both configured → both enforced independently: a listed IP still consumes a un
 
 The client IP is the leftmost `X-Forwarded-For` entry, else `X-Real-IP`, else the TCP peer. These headers are caller-controlled, so put Bifrost behind a trusted proxy that overwrites them before trusting the check — a caller can send any `X-Forwarded-For` it likes. When the IP cannot be resolved, the allowed list refuses the request (fail closed) and the unique-IP limit does not count it (fail open, other limits still enforced).
 
+The IP resolution covers every inference transport: HTTP, the Responses-over-WebSocket and realtime WebSocket family (the address that opened the session is resolved at upgrade time), the A2A agent gateway, WebRTC and MCP.
+
 Client-IP controls are virtual-key scoped only: team, customer, and provider-config rate limits reject `ip_max_limit`/`ip_reset_duration` with a `400`, and `allowed_ips` exists only on virtual keys. Enforcement never records an IP in the logs; log capture of client IPs follows `logs_store.capture_client_ip` on its own.
 
 <Tabs>

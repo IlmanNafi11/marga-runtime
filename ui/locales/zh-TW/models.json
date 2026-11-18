@@ -1306,6 +1306,7 @@
 		"allowedIPsPlaceholder": "每行一個 IP 或 CIDR，例如 10.0.0.1 或 10.0.0.0/24",
 		"allowedIPsInvalid": "以下項目不是有效的 IP 或 CIDR 區塊：{{entries}}",
 		"allowedIPsHelp": "設定後，只有這些 IP 和 CIDR 區塊可以使用該金鑰。留空則允許任何 IP。",
+		"allowedIPsDenyAll": "拒絕所有用戶端 IP（空清單）",
 		"basePlusOverride": "基礎 {{base}} + {{override}} 覆蓋",
 		"cyclesRemaining": "剩餘 {{count}} 個週期",
 		"untilRemoved": "直到移除",

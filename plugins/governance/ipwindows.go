@@ -67,31 +67,39 @@ func (w *ipWindows) clear() {
 // The record self-heals from any publish path: a changed duration re-anchors with an
 // empty set (B11) and a changed max is adopted on the spot, so a rate limit written by a
 // path that never called reconcile still enforces the configuration the check just read.
-func (w *ipWindows) admit(id string, ip net.IP, max int64, rawDuration string, duration time.Duration) (count int64, admitted bool) {
+//
+// The duration is parsed only when the configured spelling changes, never per request:
+// the record keeps the parsed value and the raw string it came from, so a steady-state
+// check is a map load plus a mutex-protected lookup. enforceable is false for an
+// unparsable or non-positive duration, which the caller treats as "not this check's to
+// enforce" — the same answer the parse gave before the record existed.
+func (w *ipWindows) admit(id string, ip net.IP, max int64, rawDuration string) (count int64, admitted bool, enforceable bool) {
 	now := time.Now()
 	raw, loaded := w.m.LoadOrStore(id, &ipWindow{
-		ips:         map[string]struct{}{},
-		start:       now,
-		max:         max,
-		duration:    duration,
-		durationRaw: rawDuration,
+		ips:   map[string]struct{}{},
+		start: now,
+		max:   max,
 	})
 	rec, _ := raw.(*ipWindow)
 	if rec == nil {
 		// A foreign value under this key cannot happen in this package; refuse rather
 		// than panic on it.
-		return 0, false
+		return 0, false, false
 	}
 
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
-	if loaded {
-		if rec.durationRaw != rawDuration {
-			rec.ips = map[string]struct{}{}
-			rec.start = now
-			rec.durationRaw = rawDuration
-			rec.duration = duration
+	if !loaded || rec.durationRaw != rawDuration {
+		duration, err := configstoreTables.ParseDuration(rawDuration)
+		if err != nil || duration <= 0 {
+			return 0, false, false
 		}
+		rec.ips = map[string]struct{}{}
+		rec.start = now
+		rec.durationRaw = rawDuration
+		rec.duration = duration
+	}
+	if loaded {
 		rec.max = max
 	}
 	// Lazy expiry: no ticker, no background sweep. The first access after the window
@@ -103,13 +111,13 @@ func (w *ipWindows) admit(id string, ip net.IP, max int64, rawDuration string, d
 
 	key := ip.String()
 	if _, seen := rec.ips[key]; seen {
-		return int64(len(rec.ips)), true
+		return int64(len(rec.ips)), true, true
 	}
 	if int64(len(rec.ips)) >= rec.max {
-		return int64(len(rec.ips)), false
+		return int64(len(rec.ips)), false, true
 	}
 	rec.ips[key] = struct{}{}
-	return int64(len(rec.ips)), true
+	return int64(len(rec.ips)), true, true
 }
 
 // reconcile applies an upserted rate limit's IP configuration to its open window (B11):
@@ -155,11 +163,10 @@ func (gs *LocalGovernanceStore) ipWindowViolation(ctx context.Context, limit sch
 	if !resolvable {
 		return "", false
 	}
-	duration, err := configstoreTables.ParseDuration(*rateLimit.IPResetDuration)
-	if err != nil || duration <= 0 {
+	count, admitted, enforceable := gs.ipWindows.admit(rateLimit.ID, ip, *rateLimit.IPMaxLimit, *rateLimit.IPResetDuration)
+	if !enforceable {
 		return "", false
 	}
-	count, admitted := gs.ipWindows.admit(rateLimit.ID, ip, *rateLimit.IPMaxLimit, *rateLimit.IPResetDuration, duration)
 	if admitted {
 		return "", false
 	}

@@ -5496,9 +5496,11 @@ func (gs *LocalGovernanceStore) CheckRateLimits(ctx context.Context, limits []sc
 		if rateLimit == nil {
 			continue
 		}
-		// The window is checked in the same pass that pairs the row with its limit, before
-		// the request is allowed: a request that is about to be refused must not have
-		// consumed one of the key's slots.
+		// The window is checked in the same pass that pairs the row with its limit, and before
+		// the token/request counters are looked at: a request refused by *this* window does not
+		// consume a slot. Admission still precedes the budget check further up the funnel, so a
+		// request refused for affordability after admission keeps its slot — counting attempts is
+		// the intended semantic of a unique-IP window.
 		if violation, exceeded := gs.ipWindowViolation(ctx, limit, rateLimit); exceeded {
 			return DecisionRateLimited, fmt.Errorf("rate limit violated for %s: %s", limitLabel(limit), violation)
 		}

@@ -1279,6 +1279,13 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 			if err := tx.First(&rl, "id = ?", *mc.RateLimitID).Error; err != nil {
 				return err
 			}
+			// A maximum sent without its window keeps the stored window (the request
+			// states the limits the owner keeps; validation would refuse a windowless
+			// maximum), the same merge applyRateLimitUpdate gives the team and
+			// provider-config paths.
+			if d.rateLimit.IPMaxLimit != nil && d.rateLimit.IPResetDuration == nil {
+				d.rateLimit.IPResetDuration = rl.IPResetDuration
+			}
 			rl.TokenMaxLimit = d.rateLimit.TokenMaxLimit
 			rl.TokenResetDuration = d.rateLimit.TokenResetDuration
 			rl.RequestMaxLimit = d.rateLimit.RequestMaxLimit
@@ -1301,6 +1308,10 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 						return err
 					}
 				} else {
+					// Same window-keeping merge as the direct update branch above.
+					if d.rateLimit.IPMaxLimit != nil && d.rateLimit.IPResetDuration == nil {
+						d.rateLimit.IPResetDuration = rl.IPResetDuration
+					}
 					rl.TokenMaxLimit = d.rateLimit.TokenMaxLimit
 					rl.TokenResetDuration = d.rateLimit.TokenResetDuration
 					rl.RequestMaxLimit = d.rateLimit.RequestMaxLimit
@@ -3126,6 +3137,19 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			RequestResetDuration: req.RateLimit.RequestResetDuration,
 			IPMaxLimit:           req.RateLimit.IPMaxLimit,
 			IPResetDuration:      req.RateLimit.IPResetDuration,
+		}
+		// A maximum sent without its window is a valid update: the merge below keeps the stored
+		// window, and validation runs again on the merged row. Fill a placeholder here so this
+		// early check only rejects what cannot be valid on its own — a non-positive maximum or an
+		// unparsable window the request did supply.
+		if rl.TokenMaxLimit != nil && rl.TokenResetDuration == nil {
+			rl.TokenResetDuration = schemas.Ptr("1h")
+		}
+		if rl.RequestMaxLimit != nil && rl.RequestResetDuration == nil {
+			rl.RequestResetDuration = schemas.Ptr("1h")
+		}
+		if rl.IPMaxLimit != nil && rl.IPResetDuration == nil {
+			rl.IPResetDuration = schemas.Ptr("1h")
 		}
 		if err := validateRateLimit(&rl); err != nil {
 			SendError(ctx, 400, fmt.Sprintf("Invalid rate limit: %s", err.Error()))

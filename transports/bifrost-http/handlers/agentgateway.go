@@ -988,7 +988,7 @@ func (h *AgentGatewayHandler) serveProtocol(ctx *fasthttp.RequestCtx, binding ag
 	// Streaming handlers hold ServeHTTP open for the entire stream, so the
 	// dispatch phase span (whose self-time would then be dominated by upstream
 	// wait) is only opened for unary operations.
-	serveNetHTTP(ctx, handler, authentication, !isStreaming, isStreaming)
+	serveNetHTTP(ctx, handler, authentication, h.config, !isStreaming, isStreaming)
 	if binding == agentBindingCard {
 		h.setCardCachingHeaders(ctx, name)
 	}
@@ -1169,7 +1169,7 @@ func AgentGatewayAuthenticationMiddleware(config *lib.Config, validator AgentGat
 					}
 				}
 				removeBifrostIdentityHeader(ctx, authentication)
-				settleAgentGatewayGrant(ctx, authentication)
+				settleAgentGatewayGrant(config, ctx, authentication)
 				ctx.SetUserValue(agentGatewayAuthenticationContextKey, authentication)
 				endAuthSpan()
 				next(ctx)
@@ -1185,7 +1185,7 @@ func AgentGatewayAuthenticationMiddleware(config *lib.Config, validator AgentGat
 					}
 				}
 				removeBifrostIdentityHeader(ctx, authentication)
-				settleAgentGatewayGrant(ctx, authentication)
+				settleAgentGatewayGrant(config, ctx, authentication)
 				ctx.SetUserValue(agentGatewayAuthenticationContextKey, authentication)
 				endAuthSpan()
 				next(ctx)
@@ -1197,7 +1197,7 @@ func AgentGatewayAuthenticationMiddleware(config *lib.Config, validator AgentGat
 				return
 			}
 			authentication := agentAuthenticationResult{}
-			settleAgentGatewayGrant(ctx, authentication)
+			settleAgentGatewayGrant(config, ctx, authentication)
 			ctx.SetUserValue(agentGatewayAuthenticationContextKey, authentication)
 			endAuthSpan()
 			next(ctx)
@@ -1205,8 +1205,8 @@ func AgentGatewayAuthenticationMiddleware(config *lib.Config, validator AgentGat
 	}
 }
 
-func settleAgentGatewayGrant(ctx *fasthttp.RequestCtx, authentication agentAuthenticationResult) {
-	bifrostCtx := bifrostIdentityContext(ctx, context.Background(), authentication)
+func settleAgentGatewayGrant(config *lib.Config, ctx *fasthttp.RequestCtx, authentication agentAuthenticationResult) {
+	bifrostCtx := bifrostIdentityContextWithClientIP(ctx, context.Background(), authentication, config)
 	ctx.SetUserValue(agentGatewayBifrostContextKey, bifrostCtx)
 }
 
@@ -1372,12 +1372,12 @@ func pathName(ctx *fasthttp.RequestCtx) string { v, _ := ctx.UserValue("name").(
 // net/http server's request context — is not ended when the client disconnects,
 // so a vanished SSE consumer would otherwise leave the upstream stream running
 // forever. The failing write is the disconnect signal.
-func serveNetHTTP(ctx *fasthttp.RequestCtx, handler http.Handler, authentication agentAuthenticationResult, spanDispatch, completeTrace bool) {
+func serveNetHTTP(ctx *fasthttp.RequestCtx, handler http.Handler, authentication agentAuthenticationResult, config *lib.Config, spanDispatch, completeTrace bool) {
 	traceCompleter, _ := ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func([]schemas.PluginLogEntry))
 	wrapped := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		bifrostCtx, _ := ctx.UserValue(agentGatewayBifrostContextKey).(*schemas.BifrostContext)
 		if bifrostCtx == nil {
-			bifrostCtx = bifrostIdentityContext(ctx, req.Context(), authentication)
+			bifrostCtx = bifrostIdentityContextWithClientIP(ctx, req.Context(), authentication, config)
 		}
 		defer bifrostCtx.Cancel()
 		if completeTrace && traceCompleter != nil {
@@ -1463,6 +1463,23 @@ func bifrostIdentityContext(fastCtx *fasthttp.RequestCtx, parent context.Context
 		bifrostCtx.SetValue(schemas.BifrostContextKeyUserID, authentication.userID)
 	}
 	lib.SettleIdentity(bifrostCtx)
+	return bifrostCtx
+}
+
+// bifrostIdentityContextWithClientIP is bifrostIdentityContext plus the caller's address: a
+// virtual key's allowed-IP list and unique-IP window evaluate against the same value an HTTP
+// request would carry (forwarded headers first, then the TCP peer — the trust model documented
+// in docs/features/governance/virtual-keys.mdx). The IP resolves only when log capture or IP
+// enforcement needs it, so requests that need neither pay one atomic load.
+func bifrostIdentityContextWithClientIP(fastCtx *fasthttp.RequestCtx, parent context.Context, authentication agentAuthenticationResult, config *lib.Config) *schemas.BifrostContext {
+	bifrostCtx := bifrostIdentityContext(fastCtx, parent, authentication)
+	if config != nil && (config.ShouldCaptureClientIP() || config.ShouldEnforceClientIP()) {
+		if clientIP := lib.ClientForwardedIP(fastCtx); clientIP != "" {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyClientIP, clientIP)
+		} else if ip := fastCtx.RemoteIP(); ip != nil && !ip.IsUnspecified() {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyClientIP, ip.String())
+		}
+	}
 	return bifrostCtx
 }
 

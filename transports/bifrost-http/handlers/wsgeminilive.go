@@ -23,7 +23,7 @@ var geminiLiveProtocol = &nativeProtocol{name: "Gemini Live", integration: "gena
 // the connection is admitted after the upgrade. The credential is still checked before it.
 func (h *WSRealtimeHandler) handleGeminiLiveUpgrade(ctx *fasthttp.RequestCtx) {
 	path := string(ctx.Path())
-	setupHeaders := captureSessionHeaders(ctx)
+	setupHeaders := captureSessionHeaders(ctx, h.handlerStore)
 	// Browsers and the JS SDK cannot set headers on a WebSocket, so Live also takes the key as ?key=.
 	if setupHeaders.googAPIKey == "" {
 		setupHeaders.googAPIKey = string(ctx.QueryArgs().Peek("key"))

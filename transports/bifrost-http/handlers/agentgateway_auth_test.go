@@ -638,6 +638,27 @@ func TestBifrostIdentityContextIncludesRequestHeaders(t *testing.T) {
 	require.Equal(t, "project-1", headers[schemas.HeaderGovernanceProjectID])
 }
 
+// TestBifrostIdentityContextCarriesClientIP pins the A2A half of virtual-key IP controls: a
+// request through the agent gateway evaluates the presented key's allowed-IP list and unique-IP
+// window against the same client address an HTTP request would carry. Without it, an allowlisted
+// key is refused on every A2A request (fail closed) and the unique-IP window never counts.
+func TestBifrostIdentityContextCarriesClientIP(t *testing.T) {
+	fastCtx := &fasthttp.RequestCtx{}
+	fastCtx.Init(&fasthttp.Request{}, &net.TCPAddr{IP: net.IPv4(203, 0, 113, 9), Port: 44211}, nil)
+	fastCtx.Request.Header.Set("X-Forwarded-For", "10.0.0.5, 203.0.113.9")
+
+	config := &lib.Config{}
+	config.SetEnforceClientIP(true)
+	bifrostCtx := bifrostIdentityContextWithClientIP(fastCtx, context.Background(), agentAuthenticationResult{}, config)
+	defer bifrostCtx.Cancel()
+	require.Equal(t, "10.0.0.5", bifrostCtx.Value(schemas.BifrostContextKeyClientIP))
+
+	// The gate off: no IP is resolved and none is published.
+	offCtx := bifrostIdentityContextWithClientIP(fastCtx, context.Background(), agentAuthenticationResult{}, &lib.Config{})
+	defer offCtx.Cancel()
+	require.Nil(t, offCtx.Value(schemas.BifrostContextKeyClientIP))
+}
+
 // grantPipeline is a stand-in for the governance plugin: it implements the same
 // narrow A2A plugin pipeline the core wires in, and denies any virtual key that is
 // not in its allow set. It lets these transport tests prove the handler maps a

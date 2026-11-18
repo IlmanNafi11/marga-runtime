@@ -1334,6 +1334,7 @@
 		"allowedIPsPlaceholder": "Один IP или CIDR в строке, напр. 10.0.0.1 или 10.0.0.0/24",
 		"allowedIPsInvalid": "Эти записи не являются допустимыми IP или CIDR-блоками: {{entries}}",
 		"allowedIPsHelp": "Если задано, ключом могут пользоваться только эти IP и CIDR-блоки. Оставьте пустым, чтобы разрешить любой IP.",
+		"allowedIPsDenyAll": "Каждый клиентский IP отклоняется (пустой список)",
 		"basePlusOverride": "База {{base}} + переопределение {{override}}",
 		"cyclesRemaining": "Осталось циклов: {{count}}",
 		"untilRemoved": "до удаления",

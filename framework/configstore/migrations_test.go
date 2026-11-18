@@ -846,6 +846,24 @@ func TestMigrationAddVirtualKeyIPControlColumns(t *testing.T) {
 	// Idempotent: a re-run with the columns already present must not fail.
 	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_virtual_key_ip_control_columns").Error)
 	require.NoError(t, migrationAddVirtualKeyIPControlColumns(ctx, db, testMigrationLogger))
+
+	// Existing rows survive with the new columns NULL, which is the meaning that keeps the
+	// feature off for every pre-upgrade key and rate limit.
+	require.NoError(t, db.Exec(`INSERT INTO governance_virtual_keys (id, name, value, created_at, updated_at)
+		VALUES ('vk-pre', 'pre-upgrade', 'sk-bf-pre', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`).Error)
+	require.NoError(t, db.Exec(`INSERT INTO governance_rate_limits (id, token_max_limit, request_max_limit, created_at, updated_at)
+		VALUES ('rl-pre', 1000, 10, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`).Error)
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_virtual_key_ip_control_columns").Error)
+	require.NoError(t, migrationAddVirtualKeyIPControlColumns(ctx, db, testMigrationLogger))
+
+	var allowedIPs *string
+	require.NoError(t, db.Raw(`SELECT allowed_ips FROM governance_virtual_keys WHERE id = 'vk-pre'`).Scan(&allowedIPs).Error)
+	assert.Nil(t, allowedIPs, "an existing key keeps no allowlist: the rule stays off")
+	var ipMax *int64
+	var ipDuration *string
+	require.NoError(t, db.Raw(`SELECT ip_max_limit, ip_reset_duration FROM governance_rate_limits WHERE id = 'rl-pre'`).Row().Scan(&ipMax, &ipDuration))
+	assert.Nil(t, ipMax, "an existing rate limit keeps no IP limit")
+	assert.Nil(t, ipDuration)
 }
 
 func TestMigrationAddStoreRawRequestResponseColumn(t *testing.T) {

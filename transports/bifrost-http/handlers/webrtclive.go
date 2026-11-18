@@ -80,7 +80,7 @@ func (h *WebRTCLiveHandler) handleCreate(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	setupHeaders := captureSessionHeaders(ctx)
+	setupHeaders := captureSessionHeaders(ctx, h.gateway.handlerStore)
 	preReqCtx, preReqCancel := createBifrostContextFromHeaders(h.gateway.handlerStore, setupHeaders)
 	defer preReqCancel()
 	preReqCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.LiveRequest)

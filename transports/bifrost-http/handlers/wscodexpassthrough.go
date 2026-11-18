@@ -276,7 +276,7 @@ func (h *WSCodexPassthroughHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 		ctx.Response.Header.Set(name, value)
 	}
 
-	setupHeaders := captureSessionHeaders(ctx)
+	setupHeaders := captureSessionHeaders(ctx, h.handlerStore)
 	middlewareValues := snapshotRealtimeMiddlewareValuesWithContext(ctx, admissionCtx)
 	turnHeaders := make(map[string]string, len(safeHeaders)+1)
 	for name, value := range safeHeaders {

@@ -81,7 +81,7 @@ type liveRequest struct {
 // before anything is opened on the operator's key. A refusal has been written to ctx.
 func (g *liveGateway) prepareRequest(ctx *fasthttp.RequestCtx) (*liveRequest, bool) {
 	path := string(ctx.Path())
-	setupHeaders := captureSessionHeaders(ctx)
+	setupHeaders := captureSessionHeaders(ctx, g.handlerStore)
 	preReqCtx, cancel := createBifrostContextFromHeaders(g.handlerStore, setupHeaders)
 	preReqCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.LiveRequest)
 	if strings.HasPrefix(path, "/openai") {

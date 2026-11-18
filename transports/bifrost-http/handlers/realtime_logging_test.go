@@ -47,7 +47,7 @@ func TestSessionLoggingHeaders(t *testing.T) {
 					requestCtx.Request.Header.Set("X-Bf-Lh-Cost-Center", "caller")
 					requestCtx.Request.Header.Set("X-Bf-Lh-"+schemas.LoadBalancerMetadataPrefix+"decision", "spoofed")
 				}
-				setupHeaders := captureSessionHeaders(requestCtx)
+				setupHeaders := captureSessionHeaders(requestCtx, testWSHandlerStore{})
 				var sessionCtx *schemas.BifrostContext
 				var cancel context.CancelFunc
 				switch transport {

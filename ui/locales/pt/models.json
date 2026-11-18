@@ -1306,6 +1306,7 @@
 		"allowedIPsPlaceholder": "Um IP ou CIDR por linha, ex. 10.0.0.1 ou 10.0.0.0/24",
 		"allowedIPsInvalid": "Estas entradas não são IPs ou blocos CIDR válidos: {{entries}}",
 		"allowedIPsHelp": "Quando definido, apenas estes IPs e blocos CIDR podem usar a chave. Deixe vazio para permitir qualquer IP.",
+		"allowedIPsDenyAll": "Cada IP de cliente é recusado (lista vazia)",
 		"basePlusOverride": "Base {{base}} + substituição {{override}}",
 		"cyclesRemaining": "{{count}} ciclos restantes",
 		"untilRemoved": "até removido",

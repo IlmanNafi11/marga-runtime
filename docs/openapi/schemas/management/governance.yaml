@@ -124,10 +124,12 @@ RateLimit:
     ip_max_limit:
       type: [integer, 'null']
       format: int64
-      description: Client-IP limit. At most this many distinct client IPs per rolling ip_reset_duration window. Enforced only when the rate limit is held by a virtual key; on other holders the fields are accepted but never enforced.
+      description: Client-IP limit. At most this many distinct client IPs per rolling ip_reset_duration window. Enforced only when the rate limit is held by a virtual key; the management API refuses the field on any other holder with a 400.
     ip_reset_duration:
       type: [string, 'null']
       description: Window for the client-IP counter (e.g. "1m", "1h", "1d"). Required when ip_max_limit is set.
+    config_hash:
+      type: [string, 'null']
     created_at:
       type: string
       format: date-time

@@ -94,7 +94,7 @@ func (h *WSRealtimeHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 	path := string(ctx.Path())
 	modelParam := string(ctx.QueryArgs().Peek("model"))
 	deploymentParam := string(ctx.QueryArgs().Peek("deployment"))
-	setupHeaders := captureSessionHeaders(ctx)
+	setupHeaders := captureSessionHeaders(ctx, h.handlerStore)
 	// Browser clients carry native credentials in a subprotocol because their
 	// WebSocket API cannot set Authorization. Retain explicit header precedence.
 	if setupHeaders.authorization == "" {

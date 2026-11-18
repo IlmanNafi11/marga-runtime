@@ -115,7 +115,7 @@ func (h *WSResponsesHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 		defer h.endSession(conn)
 
 		// Capture session headers from the upgrade request for per-event context creation
-		sessionHeaders := captureSessionHeaders(ctx)
+		sessionHeaders := captureSessionHeaders(ctx, h.handlerStore)
 
 		h.eventLoop(conn, session, sessionHeaders)
 	})
@@ -133,11 +133,13 @@ type sessionHeaders struct {
 	xiAPIKey      string
 	baggage       string
 	headers       map[string][]string
+	clientIP      string
 }
 
 // captureSessionHeaders copies all request headers for use after the setup request ends.
-func captureSessionHeaders(ctx *fasthttp.RequestCtx) *sessionHeaders {
+func captureSessionHeaders(ctx *fasthttp.RequestCtx, store lib.HandlerStore) *sessionHeaders {
 	capturedHeaders := &sessionHeaders{
+		clientIP:      resolveSessionClientIP(ctx, store),
 		authorization: string(ctx.Request.Header.Peek("Authorization")),
 		virtualKey:    string(ctx.Request.Header.Peek("x-bf-vk")),
 		apiKey:        string(ctx.Request.Header.Peek("x-api-key")),
@@ -152,6 +154,25 @@ func captureSessionHeaders(ctx *fasthttp.RequestCtx) *sessionHeaders {
 		capturedHeaders.headers[k] = append(capturedHeaders.headers[k], string(value))
 	}
 	return capturedHeaders
+}
+
+// resolveSessionClientIP resolves the client IP of the upgrade request the same way
+// ConvertToBifrostContext does for HTTP requests — forwarded headers first, then the TCP peer —
+// so a virtual key's allowed-IP list and unique-IP window evaluate a Responses-over-WebSocket
+// turn against the same address the HTTP path would have seen. The forwarded headers are
+// caller-controlled and only true behind a proxy that overwrites them; that trust model and its
+// fail rules are documented in docs/features/governance/virtual-keys.mdx.
+func resolveSessionClientIP(ctx *fasthttp.RequestCtx, store lib.HandlerStore) string {
+	if store == nil || !(store.ShouldCaptureClientIP() || store.ShouldEnforceClientIP()) {
+		return ""
+	}
+	if clientIP := lib.ClientForwardedIP(ctx); clientIP != "" {
+		return clientIP
+	}
+	if ip := ctx.RemoteIP(); ip != nil && !ip.IsUnspecified() {
+		return ip.String()
+	}
+	return ""
 }
 
 // eventLoop reads events from the client WebSocket and processes them.
@@ -857,6 +878,13 @@ func createBifrostContextFromHeaders(handlerStore lib.HandlerStore, setupHeaders
 			}
 		}
 		ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, requestHeaders)
+	}
+
+	// The client IP of the upgrade request rides the session: governance evaluates a turn's
+	// allowed-IP list and unique-IP window against the address that opened it, the same value
+	// an HTTP request would carry. Empty when neither log capture nor enforcement needs it.
+	if setupHeaders.clientIP != "" {
+		ctx.SetValue(schemas.BifrostContextKeyClientIP, setupHeaders.clientIP)
 	}
 
 	if sessionID := lib.ParseSessionIDFromBaggage(setupHeaders.baggage); sessionID != "" {

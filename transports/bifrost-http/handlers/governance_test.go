@@ -6560,6 +6560,81 @@ func TestVirtualKeyIPControls_UpdateTriState(t *testing.T) {
 	assert.Contains(t, string(badCtx.Response.Body()), "allowed_ips")
 }
 
+// TestVirtualKeyIPControls_UpdateIPPairMerge pins the update-path merge for the IP pair, the
+// same semantics the token and request pairs have: a maximum without a window keeps the stored
+// window, a null maximum clears the pair, and an omitted rate_limit block touches neither.
+func TestVirtualKeyIPControls_UpdateIPPairMerge(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+	ctx := context.Background()
+
+	createCtx := newTestRequestCtx(`{"name":"vk-ip-merge","rate_limit":{"ip_max_limit":5,"ip_reset_duration":"1h"}}`)
+	handler.createVirtualKey(createCtx)
+	require.Equal(t, fasthttp.StatusOK, createCtx.Response.StatusCode(), "create resp=%s", createCtx.Response.Body())
+	var created struct {
+		VirtualKey struct {
+			ID string `json:"id"`
+		} `json:"virtual_key"`
+	}
+	require.NoError(t, json.Unmarshal(createCtx.Response.Body(), &created))
+	vkID := created.VirtualKey.ID
+
+	putVK := func(t *testing.T, body string) *fasthttp.Response {
+		t.Helper()
+		putCtx := newVKIDCtx(vkID, body)
+		handler.updateVirtualKey(putCtx)
+		return &putCtx.Response
+	}
+	reload := func(t *testing.T) *configstoreTables.TableRateLimit {
+		t.Helper()
+		// The top-level rate limit is folded into the VK-scoped model config by every update
+		// (syncVKGovernanceToModelConfigs), which is where the live limit rows live.
+		configs, err := store.GetModelConfigsByScopeAndScopeIDs(ctx, configstoreTables.ModelConfigScopeVirtualKey, []string{vkID})
+		require.NoError(t, err)
+		require.NotEmpty(t, configs, "the update must reconcile the VK-scoped model config")
+		return configs[0].RateLimit
+	}
+
+	// max without a window: the stored window survives the merge.
+	resp := putVK(t, `{"rate_limit":{"ip_max_limit":9}}`)
+	require.Equal(t, fasthttp.StatusOK, resp.StatusCode(), "resp=%s", resp.Body())
+	merged := reload(t)
+	require.NotNil(t, merged)
+	require.NotNil(t, merged.IPMaxLimit)
+	assert.Equal(t, int64(9), *merged.IPMaxLimit)
+	require.NotNil(t, merged.IPResetDuration, "the stored window survives a max-only update")
+	assert.Equal(t, "1h", *merged.IPResetDuration)
+	// A null maximum clears the pair, the way a null request maximum clears the request pair.
+	resp = putVK(t, `{"rate_limit":{"ip_max_limit":null}}`)
+	require.Equal(t, fasthttp.StatusOK, resp.StatusCode(), "resp=%s", resp.Body())
+	// A null maximum is a removal request: the limit row is deleted and the response's
+	// rate_limit object carries no IP fields.
+	var clearedBody struct {
+		VirtualKey struct {
+			RateLimit *struct {
+				IPMaxLimit      *int64  `json:"ip_max_limit"`
+				IPResetDuration *string `json:"ip_reset_duration"`
+			} `json:"rate_limit"`
+		} `json:"virtual_key"`
+	}
+	require.NoError(t, json.Unmarshal(resp.Body(), &clearedBody))
+	if clearedBody.VirtualKey.RateLimit != nil {
+		assert.Nil(t, clearedBody.VirtualKey.RateLimit.IPMaxLimit)
+		assert.Nil(t, clearedBody.VirtualKey.RateLimit.IPResetDuration)
+	}
+
+	// An update that omits rate_limit entirely touches nothing.
+	putVK(t, `{"rate_limit":{"ip_max_limit":3,"ip_reset_duration":"2h"}}`)
+	resp = putVK(t, `{"description":"touched"}`)
+	require.Equal(t, fasthttp.StatusOK, resp.StatusCode(), "resp=%s", resp.Body())
+	untouched := reload(t)
+	require.NotNil(t, untouched)
+	require.NotNil(t, untouched.IPMaxLimit)
+	assert.Equal(t, int64(3), *untouched.IPMaxLimit)
+	assert.Equal(t, "2h", *untouched.IPResetDuration)
+}
+
 // TestVirtualKeyIPControls_RejectsInvalidIPRateLimit pins the validation shape the token/request
 // pairs already have: a maximum without its window, a non-positive maximum, or an unparsable
 // window is a 400 naming the field.

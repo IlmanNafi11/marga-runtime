@@ -342342,7 +342342,118 @@
             }
           },
           "response": []
-        }
+        },
+{
+          "name": "[EXPECT-403] openai gpt-4o-mini vk ip limit: an explicitly empty allowed list denies every client ip - ip limit",
+          "event": [
+                    {
+                              "listen": "prerequest",
+                              "script": {
+                                        "type": "text/javascript",
+                                        "exec": [
+                                                  "// ---- in-script management calls (see the folder description) ----",
+                                                  "var BASE = pm.variables.get('baseUrl');",
+                                                  "var PREFIX = 'harness-iplimit-';",
+                                                  "function call(method, path, body, cb) {",
+                                                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                                                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                                                  "  pm.sendRequest(req, function (err, res) {",
+                                                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                                                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                                                  "    cb(res, json);",
+                                                  "  });",
+                                                  "}",
+                                                  "function expectOk(label, res) {",
+                                                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                                                  "  return !!(res && res.code === 200);",
+                                                  "}",
+                                                  "function cleanup(state) {",
+                                                  "  if (!state.vk) { return; }",
+                                                  "  call('DELETE', '/api/governance/virtual-keys/' + state.vk.id, null, function (res) {",
+                                                  "    pm.test('cleanup: the virtual key was removed', function () { pm.expect([200, 204, 404], res ? res.text() : 'no response').to.include(res && res.code); });",
+                                                  "  });",
+                                                  "}",
+                                                  "function isStale(name) {",
+                                                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                                                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                                                  "}",
+                                                  "function seq(list, done) { var i = 0; (function next(ok) { if (ok === false || i >= list.length) { return done(ok !== false); } list[i++](next); })(); }",
+                                                  "var run = 'run-' + Date.now();",
+                                                  "var state = { run: run };",
+                                                  "function virtualKey(cb) {",
+                                                  "  call('POST', '/api/governance/virtual-keys', {",
+                                                  "    name: PREFIX + 'vk-' + run,",
+                                                  "    provider_configs: [{ provider: 'openai', allowed_models: ['*'], key_ids: ['*'], weight: 1 }],",
+                                                  "    allowed_ips: []",
+                                                  "  }, function (res, j) {",
+                                                  "    if (!expectOk('setup: created the virtual key', res)) { return cb(false); }",
+                                                  "    var vk = (j || {}).virtual_key || {};",
+                                                  "    state.vk = { id: vk.id, value: (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value }; cb();",
+                                                  "  });",
+                                                  "}",
+                                                  "// Sweep keys an earlier crashed run left behind, then create this row's own key.",
+                                                  "call('GET', '/api/governance/virtual-keys', null, function (r0, j0) {",
+                                                  "  var stale = ((j0 && j0.virtual_keys) || []).filter(function (v) { return isStale(v.name); });",
+                                                  "  (function sweep() {",
+                                                  "    if (stale.length) { return call('DELETE', '/api/governance/virtual-keys/' + stale.shift().id, null, function () { sweep(); }); }",
+                                                  "    seq([function (next) { virtualKey(next); }], function () {",
+                                                  "      pm.collectionVariables.set('iplimit4State', JSON.stringify(state));",
+                                                  "      pm.collectionVariables.set('iplimit4VK', (state.vk || {}).value || 'missing');",
+                                                  "      pm.collectionVariables.set('iplimit4Run', run);",
+                                                  "    });",
+                                                  "  })();",
+                                                  "});"
+                                        ]
+                              }
+                    },
+                    {
+                              "listen": "test",
+                              "script": {
+                                        "type": "text/javascript",
+                                        "exec": [
+                                                  "pm.test('ip limit: an explicitly empty allowed list denies every client ip with 403', function () {",
+                                                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(403);",
+                                                  "});",
+                                                  "pm.test('ip limit: the deny-all refusal is the generic message, never the list', function () {",
+                                                  "  var text = pm.response.text();",
+                                                  "  pm.expect(text).to.include('Client IP is not allowed for this virtual key');",
+                                                  "  pm.expect(text).to.include('access_blocked');",
+                                                  "});",
+                                                  "cleanup(state);"
+                                        ]
+                              }
+                    }
+          ],
+          "request": {
+                    "method": "POST",
+                    "header": [
+                              {
+                                        "key": "Content-Type",
+                                        "value": "application/json"
+                              },
+                              {
+                                        "key": "x-bf-vk",
+                                        "value": "{{iplimit3VK}}"
+                              }
+                    ],
+                    "body": {
+                              "mode": "raw",
+                              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+                    },
+                    "url": {
+                              "raw": "{{baseUrl}}/v1/chat/completions",
+                              "host": [
+                                        "{{baseUrl}}"
+                              ],
+                              "path": [
+                                        "v1",
+                                        "chat",
+                                        "completions"
+                              ]
+                    }
+          },
+          "response": []
+}
       ]
     }
   ]

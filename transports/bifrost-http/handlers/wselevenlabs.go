@@ -122,7 +122,7 @@ func (h *WSRealtimeHandler) handleElevenlabsScribeUpgrade(ctx *fasthttp.RequestC
 	path := string(ctx.Path())
 	rawQuery := string(ctx.URI().QueryString())
 	rawModel := strings.TrimSpace(string(ctx.QueryArgs().Peek("model_id")))
-	setupHeaders := captureSessionHeaders(ctx)
+	setupHeaders := captureSessionHeaders(ctx, h.config)
 	preReqCtx, preReqCancel := createBifrostContextFromHeaders(h.handlerStore, setupHeaders)
 	preReqCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.RealtimeRequest)
 	preReqCtx.SetValue(schemas.BifrostContextKeyIntegrationType, elevenlabsScribeProtocol.integration)
@@ -167,7 +167,7 @@ func (h *WSSpeechSessionHandler) handleElevenlabsDialogueUpgrade(ctx *fasthttp.R
 	path := string(ctx.Path())
 	rawQuery := string(ctx.URI().QueryString())
 	rawModel := strings.TrimSpace(string(ctx.QueryArgs().Peek("model_id")))
-	setupHeaders := captureSessionHeaders(ctx)
+	setupHeaders := captureSessionHeaders(ctx, h.config)
 	preReqCtx, cancel := createBifrostContextFromHeaders(h.config, setupHeaders)
 	preReqCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.SpeechStreamRequest)
 	if h.config.ClientConfig.EnforceAuthOnInference && !governance.PresentedAnyCredential(preReqCtx) {

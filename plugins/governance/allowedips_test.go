@@ -2,6 +2,7 @@ package governance
 
 import (
 	"context"
+	"net"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -110,6 +111,7 @@ func TestIPNormalization(t *testing.T) {
 		{"v6 with port after brackets", "[2001:db8::1]:443", "2001:db8::1", true},
 		{"v4-mapped v6", "::ffff:10.0.0.1", "10.0.0.1", true},
 		{"v4-mapped v6 long form", "::ffff:a00:1", "10.0.0.1", true},
+		{"v4-mapped v6 with zone", "::ffff:10.0.0.1%eth0", "10.0.0.1", true},
 		{"garbage", "not-an-ip", "", false},
 		{"empty", "", "", false},
 		{"whitespace only", "   ", "", false},
@@ -247,6 +249,75 @@ func TestAllowedIPsKeylessAccessUnaffected(t *testing.T) {
 	assertDecision(t, DecisionAllow, result)
 }
 
+// TestAllowedIPsDenyAll pins the explicitly empty list: an empty, non-nil allowed_ips denies
+// every client IP, including an unresolvable one, and is distinct from nil (the rule is off).
+// This is the enforcement half of the deny-all configuration; the flag half is pinned in
+// TestAllowedIPsCacheTracksAvailability and TestClientIPControlsFlagTracksVirtualKeyWritePaths.
+func TestAllowedIPsDenyAll(t *testing.T) {
+	t.Run("explicit empty list refuses every IP", func(t *testing.T) {
+		resolver, vkValue := newAllowedIPsStore(t, []string{})
+		assertDecision(t, DecisionAccessBlocked, evaluateAccessFromIP(resolver, vkValue, "10.0.0.1"))
+		assertDecision(t, DecisionAccessBlocked, evaluateAccessFromIP(resolver, vkValue, "2001:db8::1"))
+		assertDecision(t, DecisionAccessBlocked, evaluateAccessFromIP(resolver, vkValue, ""))
+	})
+
+	t.Run("explicit empty list is a configured rule, not an absent one", func(t *testing.T) {
+		resolver, vkValue := newAllowedIPsStore(t, []string{})
+		store := resolver.store.(*LocalGovernanceStore)
+		_, hasList := store.allowedIPLists.load("vk-ip")
+		require.True(t, hasList, "an explicitly empty list must be a configured rule")
+		assertDecision(t, DecisionAccessBlocked, evaluateAccessFromIP(resolver, vkValue, "10.9.9.9"))
+	})
+}
+
+// TestAllowedIPsAndWindowOnOneKey pins the gate ordering through the plugin funnel: the access
+// gate (Step 3) runs before the limits (Step 4), so a request refused by the allowlist never
+// consumes one of the key's unique-IP slots, and an admitted IP then counts toward the limit.
+// Driving PreLLMHook rather than the resolver keeps the ordering assertion on the real sequence.
+func TestAllowedIPsAndWindowOnOneKey(t *testing.T) {
+	rl := buildIPRateLimit("ip-window-rl", 1, "1h")
+	logger := NewMockLogger()
+	vk := buildVirtualKeyWithRateLimit("vk-ip-window", "sk-bf-ip-window", "IP Window VK", rl)
+	vk.AllowedIPs = []string{"10.0.0.0/24"}
+	store, err := NewLocalGovernanceStore(t.Context(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		RateLimits:  []configstoreTables.TableRateLimit{*rl},
+	}, nil, nil)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	// A listed IP is admitted and takes the window's single slot.
+	admitted := resolverCtx(store, "sk-bf-ip-window")
+	admitted.SetValue(schemas.BifrostContextKeyClientIP, "10.0.0.1")
+	_, shortCircuit, err := plugin.PreLLMHook(admitted, newChatRequest())
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+
+	// A second distinct listed IP is refused by the unique-IP window.
+	second := resolverCtx(store, "sk-bf-ip-window")
+	second.SetValue(schemas.BifrostContextKeyClientIP, "10.0.0.2")
+	_, shortCircuit, err = plugin.PreLLMHook(second, newChatRequest())
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit)
+
+	// An unlisted IP is refused by the allowlist — and refused again and again, each time
+	// without consuming a slot: the first admitted IP still holds the window's only one.
+	for i := 0; i < 3; i++ {
+		refused := resolverCtx(store, "sk-bf-ip-window")
+		refused.SetValue(schemas.BifrostContextKeyClientIP, "10.9.9.9")
+		_, shortCircuit, err = plugin.PreLLMHook(refused, newChatRequest())
+		require.NoError(t, err)
+		require.NotNil(t, shortCircuit)
+	}
+	window := store.ipWindows.record("ip-window-rl")
+	require.NotNil(t, window)
+	window.mu.Lock()
+	assert.Len(t, window.ips, 1, "only the admitted IP is in the window")
+	assert.Contains(t, window.ips, "10.0.0.1")
+	window.mu.Unlock()
+}
+
 // BenchmarkEvaluateAccessWithAllowedIPs is the B13 cost statement for the allowlist gate: a key
 // with no list must pay one map miss and no key walk, and a key with a list must pay one map hit
 // plus one membership walk and no parse. Run with -benchmem.
@@ -366,4 +437,66 @@ func TestAllowedIPsCompiledOnceAtLoad(t *testing.T) {
 
 	assertDecision(t, DecisionAllow, evaluateAccessFromIP(resolver, vkValue, "192.168.4.4"))
 	assertDecision(t, DecisionAccessBlocked, evaluateAccessFromIP(resolver, vkValue, "10.0.0.4"))
+}
+
+// TestAllowedIPsFallbackCompileForNonLocalStore pins the compiledAllowedIPsFor fallback: a store
+// that keeps no compiled lists (anything but *LocalGovernanceStore) compiles the presented key's
+// entries on the spot, so enforcement still holds against a custom GovernanceStore.
+func TestAllowedIPsFallbackCompileForNonLocalStore(t *testing.T) {
+	logger := NewMockLogger()
+	local, err := NewLocalGovernanceStore(t.Context(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
+	require.NoError(t, err)
+
+	vk := buildVirtualKey("vk-fallback", "sk-bf-fallback", "Fallback VK", true)
+	vk.AllowedIPs = []string{"10.0.0.0/24"}
+	double := &fallbackStoreDouble{GovernanceStore: local, vk: vk}
+
+	ctx := resolverCtx(local, "sk-bf-fallback")
+	ctx.SetValue(schemas.BifrostContextKeyClientIP, "10.0.0.5")
+	list, hasList := compiledAllowedIPsFor(double, vk.ID, ctx)
+	require.True(t, hasList, "the fallback must compile the presented key's entries")
+	ip, ok := NormalizeClientIP("10.0.0.5")
+	require.True(t, ok)
+	assert.True(t, ipAllowedInList(list.nets, ip))
+
+	// A key with no list answers "no rule" through the fallback too.
+	vk.AllowedIPs = nil
+	double.vk = vk
+	_, hasNoList := compiledAllowedIPsFor(double, vk.ID, ctx)
+	assert.False(t, hasNoList)
+}
+
+// fallbackStoreDouble is the minimal GovernanceStore the fallback branch serves: it resolves the
+// presented key from its own field and delegates everything else to a real LocalGovernanceStore.
+type fallbackStoreDouble struct {
+	GovernanceStore
+	vk *configstoreTables.TableVirtualKey
+}
+
+func (d *fallbackStoreDouble) GetVirtualKey(ctx context.Context, vkValue string) (*configstoreTables.TableVirtualKey, bool) {
+	return d.vk, true
+}
+
+// TestParseAllowedIPsDropsInvalidEntry pins the config.json path: a list that skips the API's
+// write-time validation must not widen the rule when one entry fails to compile — the bad entry
+// is dropped and the compiled set only covers what parsed.
+func TestParseAllowedIPsDropsInvalidEntry(t *testing.T) {
+	nets := parseAllowedIPs([]string{"10.0.0.0/24", "not-an-ip", "10.0.0.0/33", "2001:db8::/32"})
+	require.Len(t, nets, 2, "only the parseable entries compile")
+
+	inside, err := parseAllowedIPEntry("10.0.0.0/24")
+	require.NoError(t, err)
+	assert.True(t, inside.Contains(netip(t, "10.0.0.5")))
+	outside, err := parseAllowedIPEntry("2001:db8::/32")
+	require.NoError(t, err)
+	assert.True(t, outside.Contains(netip(t, "2001:db8::1")))
+}
+
+// netip parses a test address or fails the test: the compiled-set assertions compare parsed
+// addresses, never strings.
+func netip(t *testing.T, value string) net.IP {
+	t.Helper()
+	ip, ok := NormalizeClientIP(value)
+	require.True(t, ok, "test address %q must parse", value)
+	return ip
 }

@@ -163,7 +163,6 @@ func TestConvertToBifrostContext_ClientIPOffByDefault(t *testing.T) {
 	}
 }
 
-
 // TestConvertToBifrostContext_ClientIPForEnforcement pins B12: the caller's IP reaches the
 // context when IP enforcement needs it even though log capture is off, and is still absent when
 // both are off. Without it, a virtual key with an allowed-IP list or a unique-IP limit would see

@@ -252,3 +252,20 @@ func TestClientIPControlsInitWiresHook(t *testing.T) {
 		})
 	}
 }
+
+// TestIPLimitDeltaClampsUnderflow pins the guard in vkIPLimitDelta: a loss without its matching
+// gain is a caller bug, so the counter clamps at zero and resynchronizes from the keys rather
+// than letting a negative count suppress the flag forever.
+func TestIPLimitDeltaClampsUnderflow(t *testing.T) {
+	store, _ := newIPGateStore(t)
+	ctx := t.Context()
+	store.CreateVirtualKeyInMemory(ctx, vkWithIPLimit("vk-clamp", 3))
+	require.True(t, store.HasClientIPControls())
+
+	// Two losses with one key carrying the control: the clamp resyncs from the entries and
+	// keeps the flag on, because the key still does carry an IP limit.
+	store.virtualKeyLostIPLimit()
+	store.virtualKeyLostIPLimit()
+	require.GreaterOrEqual(t, store.ipLimitedVKs.Load(), int64(0), "the counter cannot go negative")
+	require.True(t, store.HasClientIPControls(), "the key's own entry is what the resync reads")
+}

@@ -76,7 +76,7 @@ func (h *WSSpeechSessionHandler) Close() {
 // handleUpgrade refuses an anonymous caller with a plain 401 before anything is opened on the operator's key.
 func (h *WSSpeechSessionHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 	path := string(ctx.Path())
-	setupHeaders := captureSessionHeaders(ctx)
+	setupHeaders := captureSessionHeaders(ctx, h.config)
 	preReqCtx, cancel := createBifrostContextFromHeaders(h.config, setupHeaders)
 	preReqCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.SpeechStreamRequest)
 	if h.config.ClientConfig.EnforceAuthOnInference && !governance.PresentedAnyCredential(preReqCtx) {

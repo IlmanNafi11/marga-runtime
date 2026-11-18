@@ -32,6 +32,8 @@ import (
 type testWSHandlerStore struct {
 	matcher         *lib.HeaderMatcher
 	allowDirectKeys bool
+	captureClientIP bool
+	enforceClientIP bool
 }
 
 func (s testWSHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher {
@@ -62,8 +64,8 @@ func (s testWSHandlerStore) ShouldAllowPerRequestStorageOverride() bool      { r
 func (s testWSHandlerStore) ShouldAllowPerRequestRawOverride() bool          { return false }
 func (s testWSHandlerStore) ShouldAllowDirectKeys() bool                     { return s.allowDirectKeys }
 func (s testWSHandlerStore) ShouldSendExtraFieldsInHeaders() bool            { return false }
-func (s testWSHandlerStore) ShouldCaptureClientIP() bool                     { return false }
-func (s testWSHandlerStore) ShouldEnforceClientIP() bool                     { return false }
+func (s testWSHandlerStore) ShouldCaptureClientIP() bool                     { return s.captureClientIP }
+func (s testWSHandlerStore) ShouldEnforceClientIP() bool                     { return s.enforceClientIP }
 func (s testWSHandlerStore) IsProviderConfigured(schemas.ModelProvider) bool { return false }
 func (s testWSHandlerStore) GetMCPExternalServerURL() string                 { return "" }
 func (s testWSHandlerStore) GetMCPExternalClientURL() string                 { return "" }
@@ -214,12 +216,58 @@ func TestCreateBifrostContextFromHeaders_DirectKey(t *testing.T) {
 	}
 }
 
+// TestSessionClientIPResolvedAtUpgrade pins the transport half of virtual-key IP controls: a
+// Responses-over-WebSocket turn evaluates the key's allowed-IP list and unique-IP window against
+// the address that opened the session. Without this, an allowlisted key is refused on every
+// turn (fail closed on a missing IP) while the unique-IP window silently never counts.
+func TestSessionClientIPResolvedAtUpgrade(t *testing.T) {
+	newCtx := func() *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Init(&fasthttp.Request{}, &net.TCPAddr{IP: net.IPv4(203, 0, 113, 9), Port: 44210}, nil)
+		return ctx
+	}
+
+	t.Run("peer address is carried onto every turn's context", func(t *testing.T) {
+		ctx := newCtx()
+		setupHeaders := captureSessionHeaders(ctx, testWSHandlerStore{enforceClientIP: true})
+		require.Equal(t, "203.0.113.9", setupHeaders.clientIP)
+
+		bifrostCtx, cancel := createBifrostContextFromHeaders(testWSHandlerStore{enforceClientIP: true}, setupHeaders)
+		defer cancel()
+		assert.Equal(t, "203.0.113.9", bifrostCtx.Value(schemas.BifrostContextKeyClientIP))
+	})
+
+	t.Run("forwarded header wins, as on the HTTP path", func(t *testing.T) {
+		ctx := newCtx()
+		ctx.Request.Header.Set("X-Forwarded-For", "10.0.0.5, 203.0.113.9")
+		setupHeaders := captureSessionHeaders(ctx, testWSHandlerStore{enforceClientIP: true})
+		assert.Equal(t, "10.0.0.5", setupHeaders.clientIP)
+	})
+
+	t.Run("nothing resolves when neither capture nor enforcement is on", func(t *testing.T) {
+		ctx := newCtx()
+		ctx.Request.Header.Set("X-Forwarded-For", "10.0.0.5")
+		setupHeaders := captureSessionHeaders(ctx, testWSHandlerStore{})
+		assert.Empty(t, setupHeaders.clientIP)
+
+		bifrostCtx, cancel := createBifrostContextFromHeaders(testWSHandlerStore{}, setupHeaders)
+		defer cancel()
+		assert.Nil(t, bifrostCtx.Value(schemas.BifrostContextKeyClientIP))
+	})
+
+	t.Run("log capture alone still resolves the IP", func(t *testing.T) {
+		ctx := newCtx()
+		setupHeaders := captureSessionHeaders(ctx, testWSHandlerStore{captureClientIP: true})
+		assert.Equal(t, "203.0.113.9", setupHeaders.clientIP)
+	})
+}
+
 func TestCreateBifrostContextFromHeadersOwnsRequestHeaders(t *testing.T) {
 	requestCtx := &fasthttp.RequestCtx{}
 	requestCtx.Request.Header.Add("X-Bf-Lh-Tenant", "first")
 	requestCtx.Request.Header.Add("X-Bf-Lh-Tenant", "acme")
 	requestCtx.Request.Header.Set("X-Custom-Identity", "alice")
-	setupHeaders := captureSessionHeaders(requestCtx)
+	setupHeaders := captureSessionHeaders(requestCtx, testWSHandlerStore{})
 	setupHeaders.headers["x-empty"] = nil
 	ctx, cancel := createBifrostContextFromHeaders(testWSHandlerStore{}, setupHeaders)
 	defer cancel()
@@ -332,7 +380,7 @@ func TestCaptureSessionHeaders_PreservesDuplicateHeaderValues(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
 
-	setupHeaders := captureSessionHeaders(ctx)
+	setupHeaders := captureSessionHeaders(ctx, testWSHandlerStore{})
 	assert.Equal(t, []string{"trace-a", "trace-b"}, setupHeaders.headers["x-bf-eh-x-trace-id"])
 }
 

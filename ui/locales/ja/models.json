@@ -1306,6 +1306,7 @@
 		"allowedIPsPlaceholder": "1行に1つのIPまたはCIDR（例: 10.0.0.1、10.0.0.0/24）",
 		"allowedIPsInvalid": "これらのエントリは有効なIPまたはCIDRブロックではありません: {{entries}}",
 		"allowedIPsHelp": "設定すると、これらのIPとCIDRブロックのみがキーを使用できます。空欄にするとすべてのIPを許可します。",
+		"allowedIPsDenyAll": "すべてのクライアントIPが拒否されます（空のリスト）",
 		"basePlusOverride": "ベース {{base}} + {{override}} 上書き",
 		"cyclesRemaining": "{{count}} 残りサイクル",
 		"untilRemoved": "取り除かれるまで",
