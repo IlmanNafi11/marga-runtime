@@ -242,6 +242,31 @@ func (r *BudgetResolver) evaluateAccess(ctx *schemas.BifrostContext, evaluationR
 		}
 	}
 
+	// The client-IP allowlist: a key that lists the addresses it may be used from admits
+	// nothing else, whatever else grants it. It binds the key the request authenticated
+	// with, so a request granted by something that is not a key carries no list here.
+	// The IP is read off the context (BifrostContextKeyClientIP) — no header is read this
+	// deep in the funnel — and an unresolvable one fails closed: membership cannot be
+	// proven.
+	//
+	// The compiled list is keyed by the row ID ResolvePermits already stamped on the
+	// context, so the common case (no key, or a key with no list) costs one map load and no
+	// lookup of the key itself (B13). A store that keeps no compiled lists — a test double,
+	// or one resolving permits from something other than keys — falls back to compiling the
+	// row's entries on the spot, which is never the production path.
+	if vkID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string); vkID != "" {
+		if list, hasList := compiledAllowedIPsFor(r.store, vkID, ctx); hasList {
+			clientIP, _ := ctx.Value(schemas.BifrostContextKeyClientIP).(string)
+			ip, resolvable := NormalizeClientIP(clientIP)
+			if !resolvable || !ipAllowedInList(list.nets, ip) {
+				return &EvaluationResult{
+					Decision: DecisionAccessBlocked,
+					Reason:   "Client IP is not allowed for this virtual key",
+				}
+			}
+		}
+	}
+
 	// Publish the provider keys the request may use, when its access restricts them at all.
 	// Downstream key selection consumes plain key ids, so it never has to know what a permit is.
 	if keyIDs, restricted := access.KeysForModel(string(provider), model); restricted {
@@ -262,6 +287,27 @@ func hasListing(access schemas.Access) bool {
 		return false
 	}
 	return access.ListedModels() != nil || access.ListedRules() != nil
+}
+
+// compiledAllowedIPsFor returns the compiled allowlist of the virtual key whose row ID the
+// request was scoped to. The GovernanceStore interface is not widened for this (B6): a
+// LocalGovernanceStore maintains the compiled lists beside its keys, so the assertion reads the
+// pre-parsed networks by ID with no row lookup. A store that keeps none — a test double, or one
+// resolving permits from something other than keys — falls back to compiling the presented key's
+// entries on the spot: correct, and one parse per request on that store only.
+func compiledAllowedIPsFor(store GovernanceStore, vkID string, ctx *schemas.BifrostContext) (*allowedIPList, bool) {
+	if local, ok := store.(*LocalGovernanceStore); ok {
+		return local.allowedIPLists.load(vkID)
+	}
+	vk, ok := store.GetVirtualKey(ctx, PresentedVirtualKey(ctx))
+	if !ok || vk == nil {
+		return nil, false
+	}
+	list := compileAllowedIPs(vk.AllowedIPs)
+	if list == nil {
+		return nil, false
+	}
+	return list, true
 }
 
 // evaluateLimits decides whether a request can be afforded: one check over every limit that covers

@@ -56,6 +56,12 @@ type LocalGovernanceStore struct {
 	// grace-period entries change together and a stale copy cannot outlive a delete. Reads stay lock-free.
 	virtualKeyWriteMu sync.Mutex
 
+	// allowedIPLists holds each virtual key's compiled allowed_ips list, keyed by VK row ID.
+	// Entries are parsed once at load and replaced as a whole on every config publish, so a
+	// request costs one sync.Map load and never re-parses a CIDR (B8). Maintained by the same
+	// write paths that maintain virtualKeys; see allowedIPsCache.
+	allowedIPLists allowedIPsCache
+
 	// Last DB usages for budgets and rate limits
 	LastDBUsagesBudgetsMu            sync.RWMutex       // Last DB usages for budgets
 	LastDBUsagesRateLimitsRequestsMu sync.RWMutex       // Mutex for last DB usages for rate limits requests
@@ -2147,6 +2153,12 @@ func (gs *LocalGovernanceStore) storeVirtualKey(value string, vk *configstoreTab
 		}
 		return
 	}
+
+	// Compile and publish the key's allowed_ips list, or drop the cached one when the
+	// key now carries none. Cached under the row ID, so both value aliases see it.
+	if vk != nil && vk.ID != "" {
+		gs.allowedIPLists.storeEntries(vk.ID, vk.AllowedIPs)
+	}
 	gs.virtualKeys.Store(value, vk)
 	if vk != nil && vk.ID != "" {
 		gs.virtualKeysByID.Store(vk.ID, vk)
@@ -3606,6 +3618,8 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 	gs.modelConfigs = sync.Map{}
 	gs.providers = sync.Map{}
 
+	gs.allowedIPLists.clear()
+
 	// Build customers map
 	for i := range customers {
 		customer := &customers[i]
@@ -4163,6 +4177,10 @@ func (gs *LocalGovernanceStore) DeleteVirtualKeyInMemory(ctx context.Context, vk
 		}
 		return true // continue iteration
 	})
+
+	// Drop the key's compiled allowlist whether or not its row was still registered: like
+	// the model-config eviction below, this must not depend on finding the entry.
+	gs.allowedIPLists.delete(vkID)
 
 	// Evict any model configs scoped to this virtual key (and their budgets/rate-limits).
 	// Mirrors the DB-side cleanup in DeleteVirtualKey and keeps the in-memory store
