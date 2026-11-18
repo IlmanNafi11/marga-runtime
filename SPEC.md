@@ -1,406 +1,236 @@
-# Spec: Marga Runtime — Standalone Repository, CI and Release
+# Spec: Virtual Key Client-IP Controls (IP Limitation)
 
 - Date: 2026-11-17
-- Status: open questions resolved; awaiting approval to implement (no implementation until approved)
-- Owner: IlmanNafi11
-- Repository: `IlmanNafi11/marga-runtime` (public fork of `maximhq/bifrost`)
-- Source documents: `docs/superpowers/specs/2026-11-17-marga-runtime-release-design.md` (design), `docs/superpowers/plans/2026-11-17-marga-runtime-release.md` (implementation plan)
-- This file is the contract the plan implements. Where the plan and this spec disagree, this spec wins until it is amended.
+- Status: drafted from approved design + plan; awaiting operator approval (no implementation until approved)
+- Repository: `IlmanNafi11/bifrost`, worktree `add-ip-limit`
+- Source documents: `docs/superpowers/specs/2026-11-17-virtual-key-ip-controls-design.md` (design, approved in conversation), `docs/superpowers/plans/2026-11-17-virtual-key-ip-controls.md` (implementation plan)
+- This file is the contract the plan implements. Where the plan and this spec disagree, this spec wins until it is amended. The design doc remains the record of *why*; this file states *what*.
 
 ---
 
-## 0. Capability map (Phase 0)
+## 0. Scope check (Phase 0)
 
-The request bundles capabilities that ship and verify independently. Module ids are stable; the plan's tasks are mapped to them.
+The request names one feature — virtual-key IP controls — delivered as two knobs (unique-IP limit, allowed-IP list) that share every piece of machinery: the same `TableRateLimit` row pattern, the same governance `Evaluate` funnel, the same capture gate, the same UI rate-limiting block, the same harness cases. Neither knob ships or verifies alone: an allowed list without the capture-gate work is unenforceable, and the unique-IP limit reuses the identical window/reset/validation machinery. Cutting one would not leave an independently shippable capability behind.
 
-| Module id | Responsibility | Depends on | Plan tasks |
-|---|---|---|---|
-| `m01-build-integrity` | `make build` and every release build compile the fork's own `core`/`framework`/`plugins` from `go.work`; `GOWORK=off` builds become impossible in CI | — | 1 |
-| `m02-container-image` | One root `Dockerfile` built from the workspace; image boots, serves UI, reports version | `m01` | 2 |
-| `m03-ci-light` | One `ci.yml` on PR + `dev`: build, vet, unit tests, i18n — no services, no secrets | `m01` | 3, 6 |
-| `m04-release-pipeline` | Tag `v*` → 5 binaries + checksums + multi-arch images in GHCR and Docker Hub + GitHub Release | `m01`, `m03` | 4, 5, 7 |
-| `m05-full-tests` | On-demand service-backed suite (postgres/weaviate/clickhouse/redis, MCP fixtures) | `m03` | 8 |
-| `m06-repo-retirement` | Remove the upstream release apparatus; leave no dangling reference | `m02`, `m03`, `m04`, `m05` | 9 |
-| `m07-operator-docs` | `README.md`: build, release, required config, versioning, upstream sync, deliberate limits | `m04`, `m05`, `m06` | 10 |
+**Determination: single capability. No capability map; one spec.** The plan's Tasks 1–7 are dependency-ordered slices within this one spec, not modules.
 
-Build order: `m01 → m02 → m03 → m04 → m05 → m06 → m07`.
-
-Dependency direction is one-way; no cycle. Cross-module interface is limited to three scripts and the two workflow entry points:
-
-- `require-go-workspace.sh` — produced by `m01`, consumed by `Makefile` (`m01`), `ci.yml` (`m03`), `release.yml` (`m04`).
-- `run-core-unit-tests.sh` — produced by `m03`, consumed by `ci.yml` (`m03`), `release.yml` `verify` job (`m04`), `full-tests.yml` shares the skip semantics (`m05`).
-- `build-release-binary.sh`, `compute-image-tags.sh` — produced by `m04`, consumed only by `release.yml` (`m04`).
-
-This spec is single-file at the user's request: the module sections in §9 are the per-module specs, indexed by the table above.
+The previous root spec (`SPEC.md`, Marga runtime release) belonged to a shipped initiative (v0.0.1 stable recorded in git history); this file replaces it as the active contract. The Marga spec remains recoverable in git history; its design/plan docs stay under `docs/superpowers/`.
 
 ### Assumptions I am making (correct now, or they become defects)
 
-1. The fork stays public; `ubuntu-24.04-arm` stays free and GHCR pulls are anonymous once visibility is flipped once.
-2. Module paths stay `github.com/maximhq/bifrost/...`; upstream merges are wanted occasionally (design D1).
-3. `dev` is the only long-lived branch; no `main` is created (design D8).
-4. Docker Hub credentials already exist or will exist; a missing value fails the release loudly instead of skipping a registry.
-5. Deleting `e2e-tests.yml`, `pr-tests.yml`, `ui-i18n.yml`, `live-tests.yml`, `docs-validation.yml`, `scorecards.yml`, `snyk.yml`, `dependency-review.yml`, `labeler.yml`, `labels.yml`, `codspeed.yml`, `openapi-*.yml`, `realtime-tests.yml`, `run-core-tests.yml`, `release-*.yml`, `npx-publish.yml`, `helm-release.yml`, `workflow-lint.yml`, `pr-test-notifier.yml`, `dependabot-alerts.yml` is intended — CI parity with upstream is a non-goal.
-6. No benchmark/cost statement is required for this change: it touches build/release apparatus only and adds zero work to the request path (§9 "Cost" note).
-7. Provider-harness cases are **not** required here. Exemption rationale in §7.4.
+1. The approved design doc is final; this spec turns it into testable contract language, not a re-design.
+2. Virtual-key scoping only — teams, customers, access profiles, and provider-level limits get no IP controls in this version (design decision, restated as boundary).
+3. XFF spoofing is an accepted, documented risk; the leftmost-XFF resolution order is not changed here.
+4. The live provider harness run is the operator's; the agent ships unit tests + structural harness validation and hands over the two commands.
 
----
+- Verified baseline (this worktree): `go.work` is gitignored and absent until `source .github/workflows/scripts/setup-go-workspace.sh` runs; after that, `framework/configstore` builds clean. `transports/bifrost-http` fails to build only because the embedded-UI embed (`all:ui`) has no `ui/build` output in a fresh worktree — pre-existing, unrelated to this feature; the packages this spec touches (`lib/`, `handlers/`, `server/`) compile as packages (`go build ./bifrost-http/lib/ ./bifrost-http/handlers/ ./bifrost-http/server/`). CONSTRAINTS.md's stale "configstore does not build" note does not apply here.
 
 ## 1. Objective
 
-Manage `marga-runtime` as a standalone product repository, not as a mirror of a 40-engineer release org.
+Operators hosting virtual keys for many users can today cap tokens and requests but cannot constrain *where* requests come from, even though Bifrost already resolves the client IP. Two virtual-key-level controls close this:
 
-**Users**
+1. **Unique-IP limit** (`ip_max_limit` + `ip_reset_duration` on the rate limit) — at most N distinct client IPs per rolling reset window; the N+1th distinct IP is refused with 429 until the window rolls. Unset = unlimited.
+2. **Allowed-IP list** (`allowed_ips` on the virtual key) — when set, only listed IPs/CIDRs may use the key; everything else is refused with 403. Unset = rule 1 alone.
 
-- Operator (the owner): tags a version, gets a binary and an image, runs them.
-- Future self / collaborator: runs `CI=1 make build` locally and gets a binary compiled from the tree in front of them.
-- Anyone: `docker run` the published image.
+Both configured → both enforced independently: a listed IP still consumes a unique-IP slot and can be refused by the limit.
 
-**Success looks like**
+**Users:** the operator (configures via config.json / governance API / UI VK sheet); the API consumer (feels 403/429 with consistent governance refusal semantics).
 
-- One tag produces one release: 5 platform binaries + 5 checksums, `marga-runtime` images on GHCR and Docker Hub for `amd64`/`arm64`, GitHub Release with notes.
-- A PR to `dev` is gated by a build and unit tests in minutes, with no secret configured.
-- No command in the repository can silently compile `github.com/maximhq/*` published modules instead of this tree.
-- The release apparatus that exists is the only apparatus that exists — no orphan script, no orphan workflow, no reference to R2 / npx / Discord / `maximhq` images.
-
-**Value on the request path:** none intended. This is build/release-only; runtime behavior, endpoints, config schema and `ui/` are out of scope (design Non-goals). Nothing here allocates or executes per request.
+**Success looks like:** a VK with `allowed_ips: ["10.0.0.0/24"]` serves 10.0.0.5 and refuses 10.1.0.5 with 403; a VK with `ip_max_limit: 2` over `1h` admits the first two distinct IPs and 429s the third, then admits again after the window rolls; a key with no IP config behaves byte-identically to today (zero added cost); no IP ever reaches the logs because of enforcement.
 
 ---
 
-## 2. Scope
+## 2. Behavior contract (normative)
 
-**In scope:** `.github/workflows/` (3 files), `.github/workflows/scripts/` (keep-list + 4 new scripts + 3 test scripts), `.github/dependabot.yml`, deletion of `.github/actionlint.yaml`, `.github/CODEOWNERS`, `.github/labels.yml`, `.github/labeler.yml`, `Makefile` (`build`, `build-cli`, `_build-with-docker`, `docker-image`), root `Dockerfile`, root `.dockerignore`, `README.md`, three docs build-command fixes, deletions of `npx/`, `terraform/`, `community/`, `tasks/`, `transports/Dockerfile`, `transports/Dockerfile.redhat`.
+These rules are the acceptance criteria; each maps to tests in §6.
 
-**Out of scope:** runtime code (`core/`, `framework/`, `plugins/`, `transports/*.go`), `ui/` source, `docs/` content beyond the three build-command fixes (V5, V6, V8c), Go module publishing, Helm, Nix, provider-harness, live-provider gating.
+**B1 Storage.** `TableRateLimit` gains `IPMaxLimit *int64` (`ip_max_limit,omitempty`) and `IPResetDuration *string` (`ip_reset_duration,omitempty`); `BeforeSave` mirrors the token/request rules exactly: duration required when max is set, duration parses and is positive, max is positive. `TableVirtualKey` gains `AllowedIPs []string` (`gorm:"type:text;serializer:json"`, `allowed_ips,omitempty`), validated by `ValidateAllowedIPs` (single IPv4/IPv6 via `net.ParseIP`, CIDR via `net.ParseCIDR`; rejects unparseable, empty strings, and untrimmed whitespace — normalization happens at enforcement, never at storage).
+
+**B2 Hashes.** `GenerateRateLimitHash` incorporates the IP pair unconditionally (matches its existing per-field style). `GenerateVirtualKeyHash` incorporates `AllowedIPs` only when non-nil, mirroring the `ListedModels` presence rule so pre-existing rows keep their hash and config sync sees no drift on upgrade.
+
+**B3 Migration.** New columns via the existing `addColumnIfNotExists` chain; nullable; no backfill.
+
+**B4 Schema first.** `transports/config.schema.json` is updated before handlers: `rate_limit_line` gains the IP pair; the top-level `rate_limits` items block gains the same pair; the `virtual_keys` items block gains `allowed_ips` (array of unique strings, IP-or-CIDR). The fields ride along in `rate_limit_line` refs used by access profiles (schema accepts, enforcement never reads them for non-VK holders).
+
+**B5 API surface + holder gate.** `CreateRateLimitRequest`/`UpdateRateLimitRequest` gain the IP pair; `applyRateLimitUpdate` extends with it (nil max clears duration, mirroring token/request). VK create/update bodies accept `rate_limit.ip_max_limit`, `rate_limit.ip_reset_duration`, and top-level `allowed_ips` (update tri-state: absent = keep, `[]`/null = clear). Team, customer, and provider-config create/update handlers **reject** `ip_max_limit`/`ip_reset_duration`/`allowed_ips` with a 400 naming the field — never silently drop.
+
+**B6 Enforcement point.** The governance `Evaluate` funnel: `evaluateAccess` checks the VK's allowed list after the existing gates (resolve VK via `PresentedVirtualKey` + store lookup; CIDRs compiled once at load, never per request); `evaluateLimits` evaluates every gathered rate limit's IP window alongside token/request checks. The IP check inside the store reads the IP from context (`BifrostContextKeyClientIP`) — **no `GovernanceStore` interface change, no signature change**. Note: both `CheckRateLimit` (store.go:2215) and `CheckRateLimits` (store.go:5311) exist; the check lands on the path `evaluateLimits` actually drives — the builder verifies which and keeps them consistent.
+
+**B7 Decisions.** No new `Decision` values. Allowed-list violation → `DecisionAccessBlocked` (403) with a reason that does not enumerate the list ("Client IP is not allowed for this virtual key"). Unique-IP limit exceeded → `DecisionRateLimited` (429) with a reason naming count/max/duration.
+
+**B8 Normalization.** Before any comparison: trim whitespace, strip port/zone, `net.ParseIP`; unparseable = unresolvable. This makes `2001:0db8::1` ≡ `2001:db8::1` and lets `::ffff:1.2.3.4` match its v4 CIDR. Raw string comparison is forbidden (spoof-shaped bypass).
+
+**B9 Unresolvable IP.** Allowed list configured → refuse (fail closed). Only the unique-IP limit configured → skip the IP check (fail open); other limits still enforced.
+
+**B10 Unique-IP window.** In-memory manager in the governance store: `sync.Map` keyed by rate-limit ID → `{mutex, map[normalizedIP]struct{}, windowStart}`. Check-and-insert is one atomic step under the record mutex (two concurrent first requests from different IPs cannot both pass a full set). Recording happens at admission, the only writer — never in `BumpRateLimitUsage`/`ReportUsage`. Lazy expiry: on access, `now - windowStart >= duration` clears the set and re-anchors; no ticker; rolling windows only (no calendar alignment for the IP counter in this version). Refused IPs are not recorded; the set stops growing at `IPMaxLimit` (retained-memory bound).
+
+**B11 Window update semantics** (`UpsertRateLimitConfig`): max raised or unchanged → keep the open set; duration changed → re-anchor to now with an empty set; max cleared to nil → drop the record immediately. `DeleteRateLimit` drops the record; `rebuildInMemoryStructures` clears all windows.
+
+**B12 Capture gate.** `ConvertToBifrostContext` sets `BifrostContextKeyClientIP` when `ShouldCaptureClientIP() || ShouldEnforceClientIP()`. `ShouldEnforceClientIP()` is a new `HandlerStore` method backed by an atomic bool, true iff any loaded VK carries IP controls (non-empty allowed list or rate limit with `IPMaxLimit` set), recomputed on **every** mutation path that can change it: VK create/update/delete, rate-limit upsert/delete, config.json sync (boot + file-driven), plugin re-instantiation (`server/plugins.go`). The logging plugin keeps following `capture_client_ip` alone — enforcement never persists IPs.
+
+**B13 Zero cost for unconfigured keys.** One nil check on the VK list, two nil fields per gathered limit, one bool for the capture gate; zero allocations, no header reads. `BenchmarkCheckRateLimitWithIP` lands with the change (`-benchmem`, before/after in the PR).
+
+**B14 Non-VK holders.** A rate limit gathered for a non-VK holder is never IP-checked (its IP fields are nil by construction; the check additionally filters on `LimitHolderVirtualKey`).
 
 ---
 
-## 3. Verified baseline and required plan corrections
+## 3. Commands
 
-Verified in this worktree on 2026-11-17.
+All from repo root. `source .github/workflows/scripts/setup-go-workspace.sh` first in a fresh checkout (verified: `go.work` is gitignored and absent until sourced; after sourcing, `framework` and `transports` build clean on this branch — the stale "configstore does not build" note in CONSTRAINTS.md does not apply here).
 
-| # | Fact | Consequence |
+```bash
+# Task 1 — tables/validation/hashes (red → green)
+go test ./framework/configstore/tables/ -run 'TestRateLimit|TestValidateAllowedIPs|TestHash'
+go build ./...   # from framework/ and transports/ module dirs
+
+# Task 2 — schema + handlers + holder gate
+go test ./transports/bifrost-http/handlers/ -run 'TestVirtualKey|TestTeam'
+
+# Task 3 — governance enforcement + benchmark
+go test ./plugins/governance/ -run 'TestIP|TestAllowedIPs|TestUniqueIP'
+go test ./plugins/governance/            # full package
+go test ./plugins/governance/ -bench BenchmarkCheckRateLimitWithIP -benchmem
+
+# Task 4 — capture gate
+go test ./transports/bifrost-http/lib/ -run TestConvertToBifrostContext
+
+# Task 5 — UI
+cd ui && npx vitest run virtualKeySheet.utils.test.ts
+cd ui && npm run i18n:check && npm run format:changed && npm run build
+
+# Task 6 — harness structural validation (no live run)
+node tests/e2e/api/runners/augment-provider-harness.mjs --source tests/e2e/api/collections/provider-harness.json --out tmp/harness-augmented.json
+node tests/e2e/api/runners/filter-collection.mjs --source tmp/harness-augmented.json --out tmp/filtered.json --feature "ip limit"
+
+# Task 7 — full verification
+go test ./framework/configstore/... ./plugins/governance/ ./transports/bifrost-http/lib/ ./transports/bifrost-http/handlers/
+cd ui && npm run i18n:check && npm run build
+```
+
+Handover to the operator (agent never runs these):
+
+```bash
+make dev PORT=<port> APP_DIR=$(pwd)/tests/integrations/python
+make run-provider-harness-test PROVIDER=<provider> FEATURE="ip limit" BASE_URL=http://localhost:<port>
+```
+
+---
+
+## 4. Project structure
+
+All paths verified to exist in this worktree. Test files listed are the existing files tests land in.
+
+| Task | Modify | Tests land in |
 |---|---|---|
-| V1 | There is **no root `go.mod`**; `go.work` declares `go 1.27.4`, `core/go.mod` declares `go 1.27.3`, and `.gitignore` excludes `go.work`/`go.work.sum`, so a fresh checkout has neither | `m03`: `actions/setup-go` must read a committed file, `go-version-file: core/go.mod` (same 1.27.3 floor) — pointing it at `go.work` fails the job with "The specified go version file at: go.work does not exist" before any build runs. **Correction C1, amended after the first runner dispatch.** |
-| V2 | `.dockerignore` excludes `.github/` | `m02`: the Dockerfile must be self-contained (`go work init` + `go work use`, as `transports/Dockerfile.local` already does). It must **not** call `.github/workflows/scripts/setup-go-workspace.sh`. |
-| V3 | `.dockerignore` excludes `go.work`, `go.work.sum` | `m02`: both lines must go, exactly as plan Task 2 Step 2 says. Generic `*.md`/`docs/`/`tests/` exclusions stay. |
-| V4 | `transports/Dockerfile.local` exists and indents every directive by two spaces | `m02`: promote it verbatim, de-indent, keep `ARG VERSION`, `-X main.Version=v${VERSION}`, `USER 1000:0`, `VOLUME`, `HEALTHCHECK /health`, `ENTRYPOINT /app/docker-entrypoint.sh`. |
-| V5 | `docs/plugins/building-dynamic-binary.mdx:205,329` reference `transports/Dockerfile` and `transports/Dockerfile.debian`; after `m06` neither file exists (`Dockerfile.debian` does not exist today either) | `m06`: rewrite both "Build and run" blocks to `docker build -f -` with the inline Dockerfile from the Accordion above them; no doc may instruct building a file that is not in the tree. **Correction C2 (resolved Q1 = option b).** |
-| V6 | `docs/contributing/setting-up-repo.mdx:219` documents `make docker-image (LOCAL=1 uses Dockerfile.local)` | `m06`: drop the `LOCAL=1` parenthetical; `docker-image` points at the single root file. |
-| V7 | `.github/actionlint.yaml` lists only self-hosted labels (`arm-64-2cpu-8gb`, `builder-8-32`, `codspeed-macro`) | `m03`/`m04`: verify actionlint v1.7.12 accepts `ubuntu-24.04-arm`. If it does not, add that single label to `self-hosted-runner.labels`; do not downgrade the runner. **Correction C3.** |
-| V8 | `npx/`, `terraform/`, `community/`, `tasks/` exist; `helm-charts/`, `nix/` exist and stay | `m06` deletion list is accurate; `helm-charts/`/`nix/` are retained but never released. |
-| V8a | `.github/workflows/labels.yml` and `labeler.yml` both carry `if: github.repository_owner == 'maximhq'` and run on the custom runner `builder-8-32` | Both are dead in this fork: they never execute, and their runner label is the thing C3 removes. `m06`: delete them together with `.github/labels.yml`, `.github/labeler.yml`. **Resolved Q2.** |
-| V8b | `.github/CODEOWNERS` assigns every path to `@maximhq/bifrost-admin` and still names removed paths (`terraform/`, `npx/*`, `scripts/bifrost-migration-cli/version`) | A public solo fork cannot satisfy a team slug: GitHub silently ignores it and the stale entries mislead. `m06`: delete `.github/CODEOWNERS`. **Resolved Q5.** |
-| V8c | `docs/plugins/building-dynamic-binary.mdx:211-323` documents Option B (Debian/glibc) as a self-contained Accordion whose only repo-relative artifact is the `docker build -f transports/Dockerfile.debian` line | `m06`: keep the guide, replace the Alpine and Debian build commands with inline Dockerfiles piped to `docker build -f -`, and state that the `*Dockerfile.debian` variants are not shipped here. Deleting the section would remove the only explanation of glibc/dynamic-plugin tradeoffs. **Resolved Q1.** |
-| V9 | `core/version=1.15.2`, `framework/version=1.12.2`, `transports/version=2.5.1`, `cli/version=1.0.0`; nothing in the new pipeline reads them | `m04`: tag is the only version source; files stay untouched so upstream merges stay clean. |
-| V10 | `origin/HEAD -> origin/dev`; no `main` | `m03`: branch filter is `dev` only. No extra branch work. |
-| V11 | `release-pipeline.yml:1034-1060` skips only `*/internal/llmtests` (both by path and by `grep -lq` on `*_test.go`) | `m03`: the extracted script must keep those two checks **and** add the same two for `mcptests`. |
-| V12 | `Makefile` build recipe has three `$(if $(LOCAL),,GOWORK=off)` sites plus one in `build-cli` and two in `_build-with-docker` | `m01`: all six removed; `LOCAL` no longer means "workspace on" — the workspace is unconditional. |
-| V13 | `Makefile` targets already reference `.github/workflows/scripts/setup-go-workspace.sh` (`1773`, `1778`) and `test-integrations.sh` (`1649`) | `m06` keep-list must include both, or those targets break. |
+| 1 | `framework/configstore/tables/ratelimit.go`, `virtualkey.go`, `framework/configstore/clientconfig.go`, `framework/configstore/migrations.go` | `tables/virtualkey_test.go` (exists); `tables/ratelimit_test.go` is **new** — `ratelimit.go` has no test file today, and a file named after its source is the sanctioned exception; hash tests in the existing clientconfig test file |
+| 2 | `transports/config.schema.json` (`$defs/rate_limit_line` at :13804 + the `rate_limits` and `virtual_keys` items blocks — the plan's ~1225/~1562 line anchors are stale; locate by name), `transports/bifrost-http/handlers/governance.go` | `handlers/governance_test.go`, `governanceroutes_test.go` |
+| 3 | `plugins/governance/store.go`, `resolver.go` | `permits_test.go`, `ratelimitreset_test.go`, `resolver_test.go` |
+| 4 | `transports/bifrost-http/lib/config.go` (HandlerStore :104, impl :8630), `lib/ctx.go` (:873), `transports/bifrost-http/server/plugins.go`, VK/rate-limit mutation handlers | `lib/ctx_test.go`; store-level flag test in `plugins/governance` |
+| 5 | `ui/app/workspace/virtual-keys/views/virtualKeySheet.tsx` (labels at :1891/:1917; zod + rate-limiting block), `virtualKeyDetailsSheet.tsx`, `ui/locales/en/…` + all 10 other locale dirs | `virtualKeySheet.utils.test.ts` |
+| 6 | `tests/e2e/api/collections/provider-harness.json` (surgical splice only) | validated by the two runner scripts |
+| 7 | `docs/features/governance/virtual-keys.mdx`, `budget-and-limits.mdx`, `docs/deployment-guides/config-json/governance.mdx`, `docs/openapi/openapi.json`, `plugins/governance/changelog.md` (exists) | — |
 
 ---
 
-## 4. Commands
+## 5. Code style
 
-All commands run from the repository root unless stated. `CI` is the variable the guard reads.
+Inherited from `AGENTS.md`/`CONSTRAINTS.md`, restated where this change touches:
 
-```bash
-# Workspace (required once per checkout; idempotent, no-op if go.work exists)
-source .github/workflows/scripts/setup-go-workspace.sh
+- Go: no underscore filenames; error strings lowercase, no trailing punctuation; struct field comments are short trailing one-liners — rationale lives in the function doc comment (the window manager's admission-vs-post-hook reasoning goes on the manager type, not inline).
+- JSON tags `snake_case`; pointer tri-state on updates (nil = keep, zero/`[]` = clear) exactly as token/request and `ListedModels` do today.
+- Converters/validators pure; no logging or HTTP in table validation.
+- UI: every user-visible string through i18next, one whole sentence per key, real translations in all 11 locales; `data-testid="vk-ip-max-limit-input"`, `vk-ip-reset-duration-select`, `vk-allowed-ips-input` on new inputs; zod messages lazy via `msg()`.
+- Harness JSON: splice with a script; never reserialize the 50k-line collection.
 
-# Build (m01)
-make build-ui                 # vite build + tsc + copy-build into transports/bifrost-http/ui
-CI=1 make build               # static linux binary at tmp/bifrost-http, fails without go.work
-make build-cli                # tmp/bifrost
-
-# Script tests (m01, m03, m04) — each script ships a red/green test
-bash .github/workflows/scripts/require-go-workspace.test.sh
-bash .github/workflows/scripts/run-core-unit-tests.test.sh
-bash .github/workflows/scripts/compute-image-tags.test.sh
-bash .github/workflows/scripts/build-release-binary.test.sh
-
-# Unit tests, light tier (m03)
-bash .github/workflows/scripts/run-core-unit-tests.sh core
-for m in framework transports plugins/*/; do ( cd "$m" && env -u CI go test -short -timeout 20m ./... ); done
-(cd ui && npm run i18n:check)
-
-# Vet (m03)
-for m in core framework transports plugins/*/; do ( cd "$m" && go vet ./... ); done
-
-# Local release binary (m04)
-bash .github/workflows/scripts/build-release-binary.sh linux amd64 2.6.0 /tmp/marga-dist
-/tmp/marga-dist/marga-runtime-linux-amd64 -port 18081 -app-dir /tmp/marga-data
-
-# Image (m02)
-docker build --build-arg VERSION=2.6.0 -t marga-runtime:smoke .
-docker run -d --rm -p 18080:8080 -e APP_HOST=0.0.0.0 --name marga-smoke marga-runtime:smoke
-curl -sf http://127.0.0.1:18080/health && curl -s http://127.0.0.1:18080/ | head -c 200
-
-# Workflow lint (m03, m04, m05)
-go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/ci.yml
-go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/release.yml
-go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/full-tests.yml
-
-# Release (operator only — never run by an agent)
-git tag v2.6.0 && git push origin v2.6.0
-git tag v0.0.1-spike && git push origin v0.0.1-spike   # prerelease rehearsal
+```go
+// The window record is store state, not request state: keyed by limit ID,
+// bounded by IPMaxLimit, freed on delete or window roll.
+type ipWindow struct {
+    mu    sync.Mutex
+    ips   map[string]struct{} // normalized IPs; refused IPs are never inserted
+    start time.Time
+}
 ```
 
 ---
 
-## 5. Project structure
+## 6. Testing strategy
 
-```text
-.github/
-├── workflows/
-│   ├── ci.yml               # PR + push dev: build, vet, unit tests, i18n
-│   ├── release.yml          # push tag v*: verify, 5 binaries, 2-arch images, release
-│   ├── full-tests.yml       # workflow_dispatch: service-backed suite
-│   └── scripts/
-│       ├── apt-sources-https.sh          # used by install-cross-compilers.sh
-│       ├── install-cross-compilers.sh    # darwin/windows toolchains
-│       ├── setup-go-workspace.sh         # kept; used by Makefile, workflows
-│       ├── require-go-workspace.sh       # new (m01) + .test.sh
-│       ├── run-core-unit-tests.sh        # new (m03) + .test.sh
-│       ├── compute-image-tags.sh         # new (m04) + .test.sh
-│       ├── build-release-binary.sh       # new (m04) + .test.sh
-│       ├── harness-gateway.sh            # kept; local make targets only
-│       └── test-integrations.sh          # kept; `make test-integrations`
-├── dependabot.yml           # gomod (core, framework, transports, cli, plugins/*) + github-actions (/)
-└── actionlint.yaml          # deleted (m06): only standard runners remain
-Dockerfile                   # root; build context = repo root (m02)
-.dockerignore                # no go.work exclusions (m02)
-Makefile                     # workspace unconditional; docker-image -> Dockerfile
-README.md                    # build / release / config / versioning / sync / limits
-```
+Red before green on every task: the failing test is written first and confirmed to fail for the assertion's reason, not a compile error. Tests go into the existing files listed in §4; the single new file is `tables/ratelimit_test.go` (source file untested today).
 
-Deleted (m06): every other `.github/workflows/*.yml`, `.github/workflows/{requirements,tools,configs}/`, the retired scripts listed in the plan, `npx/`, `terraform/`, `community/`, `tasks/`, `transports/Dockerfile`, `transports/Dockerfile.redhat`.
+**Unit matrix (each row = at least one test):**
 
-Untouched by design: `core/`, `framework/`, `plugins/`, `transports/` Go sources, `ui/`, `docs/` content (except V5/V6), `helm-charts/`, `nix/`, `tests/`, all `*/version`.
-
----
-
-## 6. Code style
-
-Shell scripts: `set -uo pipefail` minimum; `set -euo pipefail` for the guard; no `#!/bin/sh`; error lines lowercase to stderr and `exit 1`; wrong argument count `exit 2`; no color codes in CI scripts.
-
-```bash
-#!/usr/bin/env bash
-# One line saying the invariant this script exists to protect.
-set -euo pipefail
-
-if [ ! -f go.work ] && [ -n "${CI:-}" ]; then
-  echo "error: go.work is missing; builds must run against the local workspace" >&2
-  exit 1
-fi
-exit 0
-```
-
-Workflows: `name:`, `on:`, `concurrency:`, explicit `permissions:`, `timeout-minutes:` on every job; pin actions by major tag (`actions/checkout@v6`); no `environment:`, no `step-security` egress hook, no secret in `ci.yml`.
-
-Naming: artifact `marga-runtime-<goos>-<goarch>[.exe]`; image `marga-runtime`; GHCR ref `ghcr.io/ilmannafi11/marga-runtime`; Docker Hub `${DOCKERHUB_USERNAME}/marga-runtime`.
-
-Go/Markdown conventions are inherited from `AGENTS.md` and unchanged (no underscore filenames, error strings lowercase, no trailing punctuation).
-
----
-
-## 7. Testing strategy
-
-Framework: plain bash test scripts beside the script under test (`<name>.test.sh`), plus `actionlint` for YAML and real build/boot smoke checks. No new Go test files — no Go source changes.
-
-### 7.1 Red/green per script (mandatory, in this order)
-
-1. Write `<name>.test.sh` first, run it, confirm it fails for the expected reason (missing script, wrong args), not a syntax error.
-2. Implement the script.
-3. Re-run: exit 0, `PASS` or silence.
-
-Each test isolates `PATH` with a fake `go` where the real compiler is irrelevant, so it runs in ~10ms and never needs network.
-
-### 7.2 Packaged verification per module
-
-| Module | Checks |
+| Contract rule | Where |
 |---|---|
-| `m01` | guard test 3 cases; `CI=1 make build` green with `go.work`, and `exit=1` after `mv go.work /tmp/go.work.bak` (restore afterwards) |
-| `m02` | `docker build` + run: `/health` 200, `/` returns HTML not 404/empty, log banner contains `v2.6.0` |
-| `m03` | selector test (fake `go`, exact args `test -timeout 20m example/core/plain`); real run over `core`; `env -u CI` loop over `framework`/`transports`/`plugins/*`; i18n check; actionlint clean |
-| `m04` | tag-computation test (stable moves `latest`, prerelease does not); binary test (CGO on, `sqlite_static` linux-only, `-buildid=`, unsupported boundary `exit 2`); one real linux/amd64 artifact booted and banner-checked; actionlint clean |
-| `m05` | workflow lints; first live dispatch is operator-run — a workflow cannot be verified without running it |
-| `m06` | reference sweep: `MISSING:` list empty; `ls .github/workflows/*.yml` prints exactly 3 files |
-| `m07` | every name in README greps back to a script/constraint (artifact, tag, variable, image) |
+| B1 duration pairing/positivity, `ValidateAllowedIPs` accept/reject set (`10.0.0.1`, `2001:db8::1`, `10.0.0.0/24`, `2001:db8::/32` vs `10.0.0.0/33`, `999.1.1.1`, `""`, trailing-space entry) | tables |
+| B2 hash changes when IP fields change, stable when nil | clientconfig tests |
+| B5 VK persists all three fields; team body → 400 naming the field; update tri-state keep/clear; `allowed_ips: ["nonsense"]` → 400 | handlers |
+| B6/B7 list admits member + CIDR member, refuses outsider with generic reason; unresolvable + list → blocked; unresolvable + limit-only → allowed | governance |
+| B8 normalization: v4-mapped IPv6, port suffix, zone, whitespace, garbage | governance |
+| B10 N distinct pass, N+1th → 429; repeat IP consumes no slot; window roll admits again; concurrency: `IPMaxLimit=2`, 5 goroutines/5 IPs → exactly 2 admitted | governance |
+| B11 raise keeps set / duration change re-anchors / clear drops | governance |
+| B14 team-held limit with seeded IP fields is never IP-checked | governance |
+| B12 flag false → true on VK store → false on delete; ctx: enforcement on + capture off + XFF → IP in context; both off → absent | governance + `lib/ctx_test.go` |
 
-### 7.3 Deliberate limit
+**Wire pinning:** harness cases (a) listed XFF → 2xx, unlisted → 403 generic reason; (b) `ip_max_limit: 1`, two distinct XFF IPs → 2xx then 429; (c) allowed list + no IP headers → 403. Exact statuses asserted; no early-return on error codes; `pm.response.text()` in failure messages; dedicated VK created/deleted by the collection's own setup/teardown pattern.
 
-Tier ringan means service-backed packages are not gated on PRs (`framework/logstore/clickhousestore_test.go:108` fails when ClickHouse is absent and `CI` is set). Compensated by `full-tests.yml` (manual) and local `make test-framework`. This limit is documented in README, not hidden.
+**UI:** payload-mapping test (fields present when set, omitted when unset; list input splits on newlines/commas, inline zod rejection of unparseable entries).
 
-### 7.4 Exemptions (explicit, per AGENTS.md)
+**Exemptions (explicit):** none — this change is wire-visible end to end; every layer gets coverage per the matrix above.
 
-- **Provider harness: exempt.** No bytes on the wire change: no handler, converter, provider or plugin source is touched. Release only changes how the binary is produced.
-- **Benchmarks: exempt.** Nothing on the request path is added or moved; per-request cost is unchanged by construction.
-- **E2E (Playwright): exempt.** No `ui/` change.
+**Coverage ratchet:** touched packages must not fall below their recorded floors (CONSTRAINTS.md); UI changed files ≥ 80%.
 
 ---
 
-## 8. Boundaries
+## 7. Boundaries
 
 **Always**
 
-- `source .github/workflows/scripts/setup-go-workspace.sh` (or rely on `Makefile`) before any `go build`/`go test` in CI; never export `GOWORK=off`.
-- `CGO_ENABLED=1` for every build; `sqlite3` is a hard dependency.
-- Keep module paths `github.com/maximhq/bifrost/...` and keep every `*/version` file byte-identical.
-- Run the narrowest check for the module you touched, once, before committing: script test, then the build/smoke it gates.
-- `actionlint` clean on each new workflow before commit.
-- One commit per plan task, message prefix `build:`, `ci:`, `chore:`, `docs:`.
+- Update `transports/config.schema.json` before handlers (B4).
+- Keep enforcement virtual-key scoped; non-VK bodies get a 400, never a silent drop (B5).
+- Normalize before comparing IPs; compile CIDRs at load, never per request (B8).
+- Fail closed on the allowed list, fail open on the limit, when the IP is unresolvable (B9).
+- One commit per plan task with the plan's stated messages (`feat(governance): …` ×2, `feat(transport): …`, `feat(ui): …`, `test(harness): …`, `docs: …`).
+- Run the narrowest verification for the touched task before committing; end the final report with the two handover commands, placeholders substituted.
+- `gofmt`/`goimports` on changed Go files; `npm run format:changed` (never repo-wide) in `ui/`.
 
 **Ask first**
 
-- Dropping any platform from the matrix (`darwin/*`, `windows/amd64`) — design D5 change, user decision.
-- Renaming artifacts, image name, registries, or tag scheme after `m04` lands.
-- Adding any repository variable/secret beyond `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN`.
-- Deleting anything under `docs/` beyond the two reference fixes (V5, V6).
-- Re-enabling upstream module publishing, R2, npx, Helm release, or a live-provider gate.
+- Adding a new `Decision` value or changing refusal status semantics (B7 pins 403/429).
+- Touching `CheckRateLimit`/`CheckRateLimits` signatures or the `GovernanceStore` interface (B6 forbids it; a discovered need is a design change).
+- Adding a UI dependency for the allowed-IPs input (search `ui/components` for an existing list/chip input first; the choice between textarea and chip input is builder's unless a dependency is needed).
+- Adding an IP-percent-used field to `GetBudgetAndRateLimitStatus` (design leaves it to the builder; default = add it, it is cheap and feeds the UI gauge).
+- Any change to the XFF resolution order or `capture_client_ip` semantics.
 
 **Never**
 
-- Build with `GOWORK=off`, or resolve `github.com/maximhq/*` published modules in any release artifact.
-- Introduce a second version source (version files, `transports/version`, `npx` package versions).
-- Put a secret, token or Docker Hub password in a workflow file, `config.json`, or the README.
-- Use QEMU emulation for the arm64 image (native `ubuntu-24.04-arm` only).
-- Remove or weaken a test to make a gate pass; skip an unexpected HTTP status in any test assertion.
-- Run the live provider harness, or push a release tag, on the user's behalf.
-- Rewrite git history or force-push `dev`.
+- Persist an IP to logs because of enforcement; the logging plugin follows `capture_client_ip` alone (B12).
+- Raw string comparison of IP values (B8).
+- Store per-IP sets, buffers, or stream-sized data in `BifrostContext` — window state lives in the store manager keyed by limit ID (B10).
+- Silently drop `ip_max_limit`/`allowed_ips` on team/customer/provider bodies (B5).
+- Skip or early-return on any HTTP status in a harness test script.
+- Weaken CONSTRAINTS.md or a test to make a gate pass.
+- Build IP controls for teams, customers, access profiles, or provider-level limits; build cross-instance sharing or DB persistence of the IP set (out of scope, documented limitation).
+- Run the live provider harness or spend the operator's money.
 
 ---
 
-## 9. Module specs
+## 8. Success criteria
 
-### m01-build-integrity — depends on: —
-
-**Objective.** Impossible to produce a green build that compiles code outside this repository.
-
-**Deliverables.** `require-go-workspace.sh` + its test; `Makefile` `build`, `build-cli`, `_build-with-docker` free of `GOWORK=off`; guard invoked first in each recipe body.
-
-**Acceptance.**
-1. `require-go-workspace.test.sh` → exit 0, no output; fails on implementation absent.
-2. Guard matrix: (`go.work` present, `CI=1`) pass; (`absent`, `CI` empty) pass; (`absent`, `CI=true`) fail with the documented message on stderr.
-3. `CI=1 make build` produces `tmp/bifrost-http`; removing `go.work` makes the same command exit non-zero.
-4. `grep -n 'GOWORK=off' Makefile` returns nothing.
-
-### m02-container-image — depends on: m01
-
-**Objective.** One image, built from the workspace, that actually serves the embedded UI.
-
-**Deliverables.** Root `Dockerfile` (promoted from `transports/Dockerfile.local`, de-indented); `.dockerignore` without `go.work`/`go.work.sum`; `make docker-image` targets `Dockerfile` and tags `marga-runtime`, `marga-runtime:$(GIT_SHA)`, `marga-runtime:latest`.
-
-**Acceptance.**
-1. `docker build --build-arg VERSION=2.6.0 -t marga-runtime:smoke .` succeeds with context = repo root.
-2. Container boots; `GET /health` OK; `GET /` returns HTML (not 404, not empty) — proves the embedded UI stage ran.
-3. Startup banner contains `v2.6.0`.
-4. `Dockerfile` matches the workspace-only copies (`core/`, `framework/`, `plugins/`, `transports/`) plus the self-contained `go work init` loop; it references no `.github/` path (excluded by `.dockerignore`).
-
-### m03-ci-light — depends on: m01
-
-**Objective.** PRs to `dev` gated in minutes with zero configured secrets.
-
-**Deliverables.** `run-core-unit-tests.sh` + test; `.github/workflows/ci.yml`.
-
-**Acceptance.**
-1. Selector test green with exact args; script exits 1 with `error: no unit-test packages found` on an empty list; skips `*/internal/llmtests` and `*/internal/mcptests` by import path and by `*_test.go` import.
-2. `ci.yml` runs on `pull_request` and `push: branches: [dev]`, `concurrency` cancel-in-progress, `permissions: contents: read`, `timeout-minutes` set.
-3. `ci.yml` uses `go-version-file: core/go.mod` (correction C1, amended) and `node-version-file: .nvmrc`.
-4. Steps: workspace → `make build-ui` → `make build` → artifact `bifrost-http-linux-amd64` → `go vet` per module → core unit tests via script → `env -u CI go test -short` per `framework`/`transports`/`plugins/*` → `npm run i18n:check`. `-short` is what makes "no services" true: the service-backed tests skip themselves instead of failing on a refused port, and `full-tests.yml` runs them without it.
-5. No `environment:`, no secret reference, no `step-security` egress step.
-6. `actionlint` clean.
-
-### m04-release-pipeline — depends on: m01, m03
-
-**Objective.** One tag → one complete, reproducible release.
-
-**Deliverables.** `compute-image-tags.sh`, `build-release-binary.sh` (+ tests); `.github/workflows/release.yml` with `meta`, `verify`, `binaries`, `publish-release`, `image`, `image-manifest`, and a `workflow_dispatch`-only `spike-cross` job.
-
-**Acceptance.**
-1. Tag computation: `2.6.0 amd64 <prefix>` emits `v2.6.0-amd64`, `2.6.0-amd64`, `v2.6.0`, `2.6.0`, `amd64`, `latest`; `2.7.0-rc.1` emits the same minus `latest`; wrong arg count → exit 2.
-2. Binary script: linux/* use `sqlite_static` + `-extldflags '-static'` + `-buildid=`; darwin/windows omit both; `CGO_ENABLED=1` always; `.exe` for windows; sibling `.sha256` with a bare filename; unsupported boundary → exit 2; empty `transports/bifrost-http/ui` → exit 1 with the actionable message.
-3. `release.yml` `meta` validates `^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$` and sets `prerelease` from a `-` suffix; failure aborts before any build.
-4. `verify` re-runs the m03 unit tier and gates `binaries`/`image`.
-5. Release carries exactly 10 assets; `prerelease` flag follows the tag.
-6. `image` fails fast when `vars.DOCKERHUB_USERNAME` is empty; pushes to both registries; `image-manifest` combines `-amd64` + `-arm64` into `v<version>`, `<version>`, and `latest` only for stable.
-7. `actionlint` clean with no `.github/actionlint.yaml` present.
-8. Verification limit stated: end-to-end proof requires the operator's `v0.0.1-spike` tag.
-
-### m05-full-tests — depends on: m03
-
-**Objective.** The service-backed coverage the light tier skips stays reachable on demand.
-
-**Deliverables.** `.github/workflows/full-tests.yml` (`workflow_dispatch` only).
-
-**Acceptance.**
-1. Brings up `tests/docker-compose.yml` and waits for Weaviate HTTP 200, gRPC 50051, ClickHouse ping before testing.
-2. Runs `make setup-mcp-tests`, `make build-ui`, then `CI=1 go test -timeout 30m ./...` in `core`, `framework`, `transports`, `plugins/*`.
-3. `docker compose down -v` under `if: always()`.
-4. `actionlint` clean.
-
-### m06-repo-retirement — depends on: m02, m03, m04, m05
-
-**Objective.** Nothing in the tree refers to something that no longer exists.
-
-**Deliverables.** Deletions per plan Task 9 plus `.github/CODEOWNERS`, `.github/labels.yml`, `.github/labeler.yml` (V8a, V8b); trimmed `.github/dependabot.yml`; deleted `.github/actionlint.yaml`; docs build-command fixes (V5, V8c) and the `LOCAL=1` note removed (V6); `Makefile` `LOCAL` leftovers removed.
-
-**Acceptance.**
-1. `ls .github/workflows/*.yml` → exactly `ci.yml`, `full-tests.yml`, `release.yml`.
-2. Every `.github/workflows/scripts/*.sh` named by `Makefile`, `*.sh`, `*.yml` exists — no `MISSING:` lines; the keep-list includes `setup-go-workspace.sh`, `test-integrations.sh`, `harness-gateway.sh`, `apt-sources-https.sh`, `install-cross-compilers.sh` and the four new scripts with their tests (V13).
-3. `.github/workflows/{requirements,tools,configs}/`, `npx/`, `terraform/`, `community/`, `tasks/`, `transports/Dockerfile`, `transports/Dockerfile.redhat`, `.github/CODEOWNERS`, `.github/labels.yml`, `.github/labeler.yml` are gone.
-4. `grep -rn 'Dockerfile\.\(debian\|redhat\)\|-f transports/Dockerfile' docs README.md` returns nothing; no doc instructs building a file that does not exist.
-5. `dependabot.yml` has `gomod` for `/core`, `/framework`, `/transports`, `/cli`, `/plugins/*` and `github-actions` for `/` only.
-6. `grep -rn 'GOWORK=off\|maximhq/bifrost.*image\|downloads.getmaxim.ai\|upload-to-r2' Makefile .github Dockerfile README.md` returns nothing.
-7. `grep -rn 'maximhq/' .github` returns nothing (no dead team slug, no dead repo gate).
-
-### m07-operator-docs — depends on: m04, m05, m06
-
-**Objective.** An operator who has never read this spec can build, release, pull and run.
-
-**Deliverables.** `README.md` sections: build from source, release steps, required repository configuration, versioning (tag-only), Docker image visibility, syncing from upstream, deliberate CI limit.
-
-**Acceptance.**
-1. Every artifact name, tag, variable and secret in README matches the scripts' output (`compute-image-tags.sh`, `build-release-binary.sh`).
-2. No reference to `npx`, R2, `downloads.getmax.ai`, or `maximhq/bifrost` images.
-3. GHCR private-on-first-publish is stated as a one-time manual step.
-4. "Deliberate limit" names `full-tests.yml` and the local `make test-*` equivalents.
+1. Every unit test in the §6 matrix exists, went red before its fix, and is green after; the full §3 verification command set exits 0.
+2. Harness structural validation passes with the `ip limit` feature filter; cases are spliced, not reserialized.
+3. Wire behavior matches B7/B9 exactly: 403 with a non-enumerating reason for list violations and unresolvable-IP-with-list; 429 with count/max/duration for limit violations.
+4. A key with no IP config shows zero added allocation in `BenchmarkCheckRateLimitWithIP` before/after numbers (nil-check-only path) and byte-identical behavior with the capture gate off.
+5. `ShouldEnforceClientIP` flips on every mutation path listed in B12 — one test per path.
+6. UI ships the three fields VK-only, i18n-clean across all 11 locales, with the named `data-testid`s; `npm run i18n:check`, `format:changed:check`, `build`, and vitest all exit 0.
+7. Docs and `docs/openapi/openapi.json` match the schema exactly.
 
 ---
 
-## 10. Success criteria (global, testable)
+## 9. Open questions
 
-| # | Criterion | Check |
-|---|---|---|
-| S1 | No build path compiles outside this tree | guard test + `grep 'GOWORK=off'` empty + image/release scripts source nothing external |
-| S2 | Binary serves UI and reports version | `/` HTML + `/health` 200 + banner version on binary and image |
-| S3 | Tag defines the version, exclusively | `meta` job + no `version` file read anywhere in `.github/` |
-| S4 | Prerelease never moves `latest` | `compute-image-tags.test.sh` |
-| S5 | 5 binaries + 5 checksums per release, 2 arch × 2 registries | rehearsal tag; artifact/tag inventory |
-| S6 | PR gate needs no secrets and finishes fast | `ci.yml` inspection + first run wall-clock recorded |
-| S7 | Retired apparatus leaves no dangling reference | deletion sweep outputs |
-| S8 | README is sufficient alone | name-grep cross-check |
+1. **Status reporting (B13-adjacent):** add an IP-percent-used field to `GetBudgetAndRateLimitStatus`? Default: yes (cheap, feeds the UI gauge). Say so if you want it dropped.
+2. **Allowed-IPs input shape:** textarea (newline/comma split) vs existing chip/list component — builder searches `ui/components` first and picks the reuse; no new dependency without asking.
+3. **Exact reason strings** for the two refusals — builder's wording, pinned by tests once written.
 
-## 11. Risks
-
-| Risk | Mitigation |
-|---|---|
-| darwin/windows cross-toolchain absent on runner | `spike-cross` (`workflow_dispatch`) before full implementation; dropping platforms requires user approval |
-| `ubuntu-24.04-arm` handling in actionlint | Correction C3 revised: standard image, so delete `actionlint.yaml` instead of allowlisting a label; verified in `m03` before `m04` |
-| ClickHouse/Weaviate test `t.Fatalf` under `CI` in the light tier | `env -u CI` loop; documented as deliberate limit |
-| Docker Hub variables unset on first release | fail fast with an explicit message; README setup step |
-| `go.work` newer than the pinned Docker Go image (1.27.4 vs 1.27.3) | `GOTOOLCHAIN=auto` downloads the toolchain inside the build stage; verify in `m02` smoke |
-| Upstream changes `transports/Dockerfile` | that file no longer exists here; conflict is localized to one removed path |
-
-## 12. Open questions — resolved 2026-11-17
-
-| # | Question | Decision | Rationale |
-|---|---|---|---|
-| Q1 | Debian snippet in `building-dynamic-binary.mdx`: delete or keep with a note? | **Keep the section, rewrite the command** (option b, strengthened) | The Accordion is self-contained (inline Dockerfile), so nothing references a missing file once `docker build -f transports/Dockerfile.debian` becomes `docker build -f -`. Deleting it would drop the only explanation of glibc vs musl for dynamic plugins. |
-| Q2 | Delete `.github/workflows/labels.yml` / `labeler.yml`? | **Delete**, with `.github/labels.yml` and `.github/labeler.yml` | Both jobs are gated `if: github.repository_owner == 'maximhq'` and target `builder-8-32`; they can never fire in this fork, and the runner label conflicts with C3. |
-| Q3 | GHCR visibility flip manual, once-only? | **Yes, manual** | The API needs the package to exist first; the workflow publishes with `GITHUB_TOKEN` and cannot reliably change package visibility on first push. README states the one-time step; `m04` does not attempt it. |
-| Q4 | Light tier acceptable (broken ClickHouse query not caught on PR)? | **Yes — accepted and documented** | Service containers on every PR cost minutes and flakiness for a solo repo; `full-tests.yml` + local `make test-framework` gate the tag. Recorded as a deliberate limit in README (`m07`). |
-| Q5 | (new) `.github/CODEOWNERS` still points at `@maximhq/bifrost-admin` and removed paths | **Delete** | Unsatisfiable on a public solo fork; stale entries for `terraform/`, `npx/*`, `scripts/bifrost-migration-cli/version` actively mislead. |
-
-## 13. Approval gate
-
-Implementation does not start until this spec is approved. All open questions are resolved (§12); no implementation decision is outstanding. On approval, the existing plan (`docs/superpowers/plans/2026-11-17-marga-runtime-release.md`) executes in module order `m01 → m07`, with corrections C1–C3 and V5/V6/V8a–V8c folded into tasks 6, 9 and 10 before their steps run.
+Implementation does not start until this spec is approved. On approval, the existing plan (`docs/superpowers/plans/2026-11-17-virtual-key-ip-controls.md`) executes task 1 → 7 with the corrections in §4 (test-file placement, stale schema line anchors, `CheckRateLimit` vs `CheckRateLimits` verification) folded in.
