@@ -152,16 +152,28 @@ func TestListAllModelsUnreachableProviderDoesNotBlockAggregate(t *testing.T) {
 // walk, so a later page timed out and the aggregate silently kept only the
 // first 1,000 models while the provider-scoped listing returned all of them).
 func TestListAllModelsIncludesEveryPageOfASlowLargeProvider(t *testing.T) {
-	const totalModels = 2*schemas.DefaultPageSize + 500
+	const totalModels = 6*schemas.DefaultPageSize + 500
 	ids := make([]string, totalModels)
 	for i := range ids {
 		ids[i] = fmt.Sprintf("model-%05d", i)
 	}
 	listing := openAIStyleModelsHandler(ids...)
-	// Each page re-fetches the upstream catalog; every fetch alone fits the
-	// deadline below, but two of them back to back do not.
+	// Each page re-fetches the upstream catalog (the provider layer slices the
+	// mock's full body into DefaultPageSize pages and hands back a cursor), and
+	// three bounds must all hold at once on a loaded CI runner, not only an idle
+	// laptop: every page fits the per-page deadline below with room to spare for
+	// scheduling and the JSON exchange; every page fits the provider's HTTP
+	// budget too (tuneProviderForTest shrinks it to 2s, which a loaded runner can
+	// also blow through — widen it like the production default it stands in
+	// for); and the whole walk still exceeds the per-page deadline, which is the
+	// regression this test pins. Margin is what matters against a stall, not the
+	// ratio: the original 300ms page against a 500ms deadline left ~200ms of
+	// slack and CI blew through it once. 2s pages against the 10s production
+	// default leave ~8s of slack, roughly 20x the noise CI showed, and seven
+	// pages make the 14s walk cross the deadline while staying under
+	// MaxPaginationRequests.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(2 * time.Second)
 		listing(w, r)
 	}))
 	t.Cleanup(srv.Close)
@@ -170,9 +182,10 @@ func TestListAllModelsIncludesEveryPageOfASlowLargeProvider(t *testing.T) {
 	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, srv.URL)
 	account.SetKeysForProvider(schemas.OpenAI, wildcardKey(schemas.OpenAI))
 	tuneProviderForTest(t, account, schemas.OpenAI)
+	account.configs[schemas.OpenAI].NetworkConfig.DefaultRequestTimeoutInSeconds = 30
 
 	oldTimeout := listAllModelsProviderTimeout
-	listAllModelsProviderTimeout = 500 * time.Millisecond
+	listAllModelsProviderTimeout = 10 * time.Second
 	t.Cleanup(func() { listAllModelsProviderTimeout = oldTimeout })
 
 	client := newListModelsTestClient(t, account, nil)
